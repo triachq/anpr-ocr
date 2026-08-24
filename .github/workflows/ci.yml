@@ -1,0 +1,44 @@
+name: anpr-ocr CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up uv and Python
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: latest
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --locked --all-groups --extra onnx
+
+      - name: Check formatting
+        run: uv run ruff format --check anpr_ocr test
+
+      - name: Run linter
+        run: uv run ruff check anpr_ocr test
+
+      - name: Run type checker
+        run: uv run mypy anpr_ocr
+
+      - name: Run tests
+        run: uv run pytest test
