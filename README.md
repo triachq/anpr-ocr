@@ -66,8 +66,8 @@ from anpr_ocr import ALPR
 
 # You can also initialize the ALPR with custom plate detection and OCR models.
 alpr = ALPR(
-    detector_model="yolo-v9-t-384-license-plate-end2end",
-    ocr_model="cct-xs-v2-global-model",
+    detector_model="yolo-v9-s-608-license-plate-end2end",
+    ocr_model="cct-s-v2-global-model",
 )
 
 # The "assets/test_image.png" can be found in repo root dir
@@ -88,8 +88,8 @@ from anpr_ocr import ALPR
 
 # Initialize the ALPR
 alpr = ALPR(
-    detector_model="yolo-v9-t-384-license-plate-end2end",
-    ocr_model="cct-xs-v2-global-model",
+    detector_model="yolo-v9-s-608-license-plate-end2end",
+    ocr_model="cct-s-v2-global-model",
 )
 
 # Load the image
@@ -176,7 +176,7 @@ class PytesseractOCR(BaseOCR):
         return OcrResult(text=plate_text, confidence=avg_confidence)
 
 
-alpr = ALPR(detector_model="yolo-v9-t-384-license-plate-end2end", ocr=PytesseractOCR())
+alpr = ALPR(detector_model="yolo-v9-s-608-license-plate-end2end", ocr=PytesseractOCR())
 
 alpr_results = alpr.predict("assets/test_image.png")
 print(alpr_results)

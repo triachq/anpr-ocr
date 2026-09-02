@@ -17,6 +17,8 @@ from open_image_models.detection.core.hub import PlateDetectorModel
 from anpr_ocr.base import BaseDetector, BaseOCR, DetectionResult, OcrResult
 from anpr_ocr.default_detector import DefaultDetector
 from anpr_ocr.default_ocr import DefaultOCR
+from anpr_ocr.utils import disambiguate_plate, pad_bounding_box
+
 
 # pylint: disable=too-many-arguments, too-many-locals
 # ruff: noqa: PLR0913
@@ -61,17 +63,21 @@ class ALPR:
         self,
         detector: BaseDetector | None = None,
         ocr: BaseOCR | None = None,
-        detector_model: PlateDetectorModel = "yolo-v9-t-384-license-plate-end2end",
+        detector_model: PlateDetectorModel = "yolo-v9-s-608-license-plate-end2end",
         detector_conf_thresh: float = 0.4,
         detector_providers: Sequence[str | tuple[str, dict]] | None = None,
         detector_sess_options: ort.SessionOptions = None,
-        ocr_model: OcrModel | None = "cct-xs-v2-global-model",
+        ocr_model: OcrModel | None = "cct-s-v2-global-model",
         ocr_device: Literal["cuda", "cpu", "auto"] = "auto",
         ocr_providers: Sequence[str | tuple[str, dict]] | None = None,
         ocr_sess_options: ort.SessionOptions | None = None,
         ocr_model_path: str | os.PathLike | None = None,
         ocr_config_path: str | os.PathLike | None = None,
         ocr_force_download: bool = False,
+        crop_margin: float = 0.05,
+        enhance_contrast: bool = False,
+        min_plate_width: int = 0,
+        syntax_pattern: str | None = None,
     ) -> None:
         """
         Initialize the ALPR system.
@@ -80,13 +86,13 @@ class ALPR:
             detector: An instance of BaseDetector. If None, the DefaultDetector is used.
             ocr: An instance of BaseOCR. If None, the DefaultOCR is used.
             detector_model: The name of the detector model or a PlateDetectorModel enum instance.
-                Defaults to "yolo-v9-t-384-license-plate-end2end".
+                Defaults to "yolo-v9-s-608-license-plate-end2end".
             detector_conf_thresh: Confidence threshold for the detector.
             detector_providers: Execution providers for the detector.
             detector_sess_options: Session options for the detector.
-            ocr_model: The name of the OCR model from the model hub. This can be none and
-                `ocr_model_path` and `ocr_config_path` parameters are expected to pass them to
-                `fast-plate-ocr` library.
+            ocr_model: The name of the OCR model from the model hub.
+                Defaults to "cct-s-v2-global-model". This can be None if `ocr_model_path` and
+                `ocr_config_path` parameters are passed.
             ocr_device: The device to run the OCR model on ("cuda", "cpu", or "auto").
             ocr_providers: Execution providers for the OCR. If None, the default providers are used.
             ocr_sess_options: Session options for the OCR. If None, default session options are
@@ -96,7 +102,17 @@ class ALPR:
             ocr_config_path: Custom config path for the OCR. If None, the default configuration is
                 used.
             ocr_force_download: Whether to force download the OCR model.
+            crop_margin: Fractional margin padding around detected bounding boxes (default: 0.05).
+                Helps prevent edge characters from being truncated.
+            enhance_contrast: Whether to apply CLAHE contrast enhancement before OCR inference.
+            min_plate_width: Minimum width to upscale small crops to (0 to disable).
+            syntax_pattern: Optional mask to disambiguate characters (e.g. 'LLDDLLDDDD').
         """
+        self.crop_margin = crop_margin
+        self.enhance_contrast = enhance_contrast
+        self.min_plate_width = min_plate_width
+        self.syntax_pattern = syntax_pattern
+
         # Initialize the detector
         self.detector = detector or DefaultDetector(
             model_name=detector_model,
@@ -114,6 +130,9 @@ class ALPR:
             model_path=ocr_model_path,
             config_path=ocr_config_path,
             force_download=ocr_force_download,
+            enhance_contrast=enhance_contrast,
+            min_plate_width=min_plate_width,
+            syntax_pattern=syntax_pattern,
         )
 
     def predict(self, frame: np.ndarray | str) -> list[ALPRResult]:
@@ -138,13 +157,39 @@ class ALPR:
         alpr_results: list[ALPRResult] = []
         for detection in plate_detections:
             bbox = detection.bounding_box
-            x1, y1 = max(bbox.x1, 0), max(bbox.y1, 0)
-            x2, y2 = min(bbox.x2, img.shape[1]), min(bbox.y2, img.shape[0])
+            if self.crop_margin > 0:
+                x1, y1, x2, y2 = pad_bounding_box(
+                    bbox.x1,
+                    bbox.y1,
+                    bbox.x2,
+                    bbox.y2,
+                    img.shape[1],
+                    img.shape[0],
+                    margin_x=self.crop_margin,
+                    margin_y=self.crop_margin,
+                )
+            else:
+                x1, y1 = max(bbox.x1, 0), max(bbox.y1, 0)
+                x2, y2 = min(bbox.x2, img.shape[1]), min(bbox.y2, img.shape[0])
+
             cropped_plate = img[y1:y2, x1:x2]
             ocr_result = self.ocr.predict(cropped_plate)
+
+            # Apply syntax disambiguation if configured on ALPR level and OCR didn't already
+            if self.syntax_pattern and ocr_result and ocr_result.text:
+                disambiguated_text = disambiguate_plate(ocr_result.text, self.syntax_pattern)
+                if disambiguated_text != ocr_result.text:
+                    ocr_result = OcrResult(
+                        text=disambiguated_text,
+                        confidence=ocr_result.confidence,
+                        region=ocr_result.region,
+                        region_confidence=ocr_result.region_confidence,
+                    )
+
             alpr_result = ALPRResult(detection=detection, ocr=ocr_result)
             alpr_results.append(alpr_result)
         return alpr_results
+
 
     def draw_predictions(self, frame: np.ndarray | str) -> DrawPredictionsResult:
         """
@@ -234,3 +279,35 @@ class ALPR:
                 )
 
         return DrawPredictionsResult(image=img, results=alpr_results)
+
+    def predict_batch(
+        self, frames: Sequence[np.ndarray | str | os.PathLike]
+    ) -> list[list[ALPRResult]]:
+        """
+        Run plate detection and OCR on a sequence of images.
+
+        Parameters:
+            frames: Sequence of image numpy arrays or file paths.
+
+        Returns:
+            A list where each item is the list of ALPRResults for that image.
+        """
+        return [self.predict(str(f) if isinstance(f, os.PathLike) else f) for f in frames]
+
+    def draw_predictions_batch(
+        self, frames: Sequence[np.ndarray | str | os.PathLike]
+    ) -> list[DrawPredictionsResult]:
+        """
+        Draw predictions on a sequence of images.
+
+        Parameters:
+            frames: Sequence of image numpy arrays or file paths.
+
+        Returns:
+            A list of DrawPredictionsResult for each image.
+        """
+        return [
+            self.draw_predictions(str(f) if isinstance(f, os.PathLike) else f)
+            for f in frames
+        ]
+

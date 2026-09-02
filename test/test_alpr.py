@@ -11,8 +11,10 @@ from fast_plate_ocr.inference.hub import OcrModel
 from open_image_models.detection.core.hub import PlateDetectorModel
 
 from anpr_ocr.alpr import ALPR
+from anpr_ocr.utils import disambiguate_plate, enhance_plate_image, pad_bounding_box
 
 ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
+
 
 
 @pytest.fixture(scope="module", name="alpr")
@@ -101,3 +103,39 @@ def test_draw_predictions(img_path: Path, alpr: ALPR) -> None:
 
     diff_path = cv2.absdiff(drawn_path.image, im)
     assert int(diff_path.sum()) > 0
+
+
+def test_pad_bounding_box() -> None:
+    x1, y1, x2, y2 = pad_bounding_box(10, 20, 110, 70, 200, 200, margin_x=0.1, margin_y=0.1)
+    assert x1 == 0  # 10 - 10
+    assert y1 == 15  # 20 - 5
+    assert x2 == 120  # 110 + 10
+    assert y2 == 75  # 70 + 5
+
+    # Test boundaries clamping
+    x1, y1, x2, y2 = pad_bounding_box(0, 0, 50, 50, 100, 100, margin_x=0.2, margin_y=0.2)
+    assert x1 == 0
+    assert y1 == 0
+    assert x2 == 60
+    assert y2 == 60
+
+
+def test_disambiguate_plate() -> None:
+    # 'LLDDLLDDDD' pattern
+    raw = "MHIZDEI433"
+    fixed = disambiguate_plate(raw, "LLDDLLDDDD")
+    assert fixed == "MH12DE1433"
+
+    # Digits to letters
+    raw2 = "0O12AB34"
+    fixed2 = disambiguate_plate(raw2, "LLDDLLDD")
+    assert fixed2 == "OO12AB34"
+
+
+def test_enhance_plate_image() -> None:
+    dummy_img = np.zeros((20, 40, 3), dtype=np.uint8)
+    enhanced = enhance_plate_image(dummy_img, enhance_contrast=True, min_width=100)
+    assert enhanced.shape[1] == 100
+    assert enhanced.shape[0] == 50  # 20 * (100 / 40)
+
+

@@ -220,3 +220,5 @@ tensorboard/
 *.plan
 trt_engine_cache/
 tensorrt/
+
+data/test_dataset/

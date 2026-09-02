@@ -13,9 +13,14 @@ from fast_plate_ocr import LicensePlateRecognizer
 from fast_plate_ocr.inference.hub import OcrModel
 
 from anpr_ocr.base import BaseOCR, OcrResult
+from anpr_ocr.utils import disambiguate_plate, enhance_plate_image
+
+# pylint: disable=too-many-arguments
+# ruff: noqa: PLR0913
 
 
 class DefaultOCR(BaseOCR):
+
     """
     Default OCR class for license plate recognition using `fast-plate-ocr` models.
     """
@@ -29,6 +34,9 @@ class DefaultOCR(BaseOCR):
         model_path: str | os.PathLike | None = None,
         config_path: str | os.PathLike | None = None,
         force_download: bool = False,
+        enhance_contrast: bool = False,
+        min_plate_width: int = 0,
+        syntax_pattern: str | None = None,
     ) -> None:
         """
         Initialize the DefaultOCR with the specified parameters. Uses `fast-plate-ocr`'s
@@ -48,6 +56,9 @@ class DefaultOCR(BaseOCR):
              used.
             force_download: If True, forces the download of the model and overwrites any existing
              files.
+            enhance_contrast: If True, applies CLAHE contrast enhancement before OCR inference.
+            min_plate_width: Minimum width to upscale small crops to (0 to disable).
+            syntax_pattern: Optional mask to disambiguate characters (e.g. 'LLDDLLDDDD').
         """
         self.ocr_model = LicensePlateRecognizer(
             hub_ocr_model=hub_ocr_model,
@@ -58,6 +69,9 @@ class DefaultOCR(BaseOCR):
             plate_config_path=config_path,
             force_download=force_download,
         )
+        self.enhance_contrast = enhance_contrast
+        self.min_plate_width = min_plate_width
+        self.syntax_pattern = syntax_pattern
 
     def predict(self, cropped_plate: np.ndarray) -> OcrResult | None:
         """
@@ -69,8 +83,17 @@ class DefaultOCR(BaseOCR):
         Returns:
             OcrResult: An object containing the recognized text and per-character confidence.
         """
-        if cropped_plate is None:
+        if cropped_plate is None or cropped_plate.size == 0:
             return None
+
+        # Preprocess plate image if configured
+        if self.enhance_contrast or self.min_plate_width > 0:
+            cropped_plate = enhance_plate_image(
+                cropped_plate,
+                enhance_contrast=self.enhance_contrast,
+                min_width=self.min_plate_width,
+            )
+
         if self.ocr_model.config.image_color_mode == "grayscale":
             cropped_plate = cv2.cvtColor(cropped_plate, cv2.COLOR_BGR2GRAY)
         elif self.ocr_model.config.image_color_mode == "rgb":
@@ -81,9 +104,15 @@ class DefaultOCR(BaseOCR):
         confidence: float | list[float] = (
             0.0 if char_probs is None else [float(x) for x in char_probs.tolist()]
         )
+
+        plate_text = prediction.plate
+        if self.syntax_pattern and plate_text:
+            plate_text = disambiguate_plate(plate_text, self.syntax_pattern)
+
         return OcrResult(
-            text=prediction.plate,
+            text=plate_text,
             confidence=confidence,
             region=prediction.region,
             region_confidence=prediction.region_prob,
         )
+
