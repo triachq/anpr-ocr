@@ -25,7 +25,7 @@ class DefaultDetector(BaseDetector):
         model_name: PlateDetectorModel = "yolo-v9-t-384-license-plate-end2end",
         conf_thresh: float = 0.4,
         providers: Sequence[str | tuple[str, dict]] | None = None,
-        sess_options: ort.SessionOptions = None,
+        sess_options: ort.SessionOptions | None = None,
     ) -> None:
         """
         Initialize the DefaultDetector with the specified parameters. Uses `open-image-models`'s

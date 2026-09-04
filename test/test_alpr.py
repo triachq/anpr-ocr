@@ -16,7 +16,6 @@ from anpr_ocr.utils import disambiguate_plate, enhance_plate_image, pad_bounding
 ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
 
 
-
 @pytest.fixture(scope="module", name="alpr")
 def alpr_fixture() -> ALPR:
     return ALPR(
@@ -137,5 +136,3 @@ def test_enhance_plate_image() -> None:
     enhanced = enhance_plate_image(dummy_img, enhance_contrast=True, min_width=100)
     assert enhanced.shape[1] == 100
     assert enhanced.shape[0] == 50  # 20 * (100 / 40)
-
-

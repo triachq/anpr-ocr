@@ -4,6 +4,11 @@ Image preprocessing and post-processing utility functions for ANPR.
 
 from __future__ import annotations
 
+from collections import deque
+from collections.abc import Sequence
+from dataclasses import dataclass
+from typing import Any
+
 import cv2
 import numpy as np
 
@@ -121,12 +126,50 @@ def enhance_plate_image(
 
 
 # Indian 2-letter state/UT and special codes
-INDIAN_STATE_CODES: frozenset[str] = frozenset({
-    "AN", "AP", "AR", "AS", "BR", "CH", "CG", "DD", "DH", "DL", "DN",
-    "GA", "GJ", "HP", "HR", "JH", "JK", "KA", "KL", "LA", "LD", "MH",
-    "ML", "MN", "MP", "MZ", "NL", "OD", "PB", "PY", "RJ", "SK", "TN",
-    "TR", "TS", "UK", "UP", "WB", "IN", "BH",
-})
+INDIAN_STATE_CODES: frozenset[str] = frozenset(
+    {
+        "AN",
+        "AP",
+        "AR",
+        "AS",
+        "BR",
+        "CH",
+        "CG",
+        "DD",
+        "DH",
+        "DL",
+        "DN",
+        "GA",
+        "GJ",
+        "HP",
+        "HR",
+        "JH",
+        "JK",
+        "KA",
+        "KL",
+        "LA",
+        "LD",
+        "MH",
+        "ML",
+        "MN",
+        "MP",
+        "MZ",
+        "NL",
+        "OD",
+        "PB",
+        "PY",
+        "RJ",
+        "SK",
+        "TN",
+        "TR",
+        "TS",
+        "UK",
+        "UP",
+        "WB",
+        "IN",
+        "BH",
+    }
+)
 
 
 INDIAN_STATE_NAMES: dict[str, str] = {
@@ -179,26 +222,41 @@ def get_state_name(plate_text: str) -> str:
         return ""
     prefix = plate_text[:2].upper()
     return INDIAN_STATE_NAMES.get(prefix, "")
+
+
 STATE_PREFIX_CORRECTIONS: dict[str, str] = {
-    "0L": "DL", "OL": "DL", "QL": "DL", "D1": "DL",
+    "0L": "DL",
+    "OL": "DL",
+    "QL": "DL",
+    "D1": "DL",
     "8R": "BR",
     "7N": "TN",
-    "7S": "TS", "1S": "TS",
-    "1H": "JH", "IH": "JH",
+    "7S": "TS",
+    "1S": "TS",
+    "1H": "JH",
+    "IH": "JH",
     "1N": "IN",
     "0D": "OD",
     # Karnataka (KA)
-    "K1": "KA", "K4": "KA", "KI": "KA", "KO": "KA", "K0": "KA",
+    "K1": "KA",
+    "K4": "KA",
+    "KI": "KA",
+    "KO": "KA",
+    "K0": "KA",
     # Haryana (HR)
-    "4R": "HR", "HB": "HR",
+    "4R": "HR",
+    "HB": "HR",
     # Maharashtra (MH)
-    "M8": "MH", "NH": "MH",
+    "M8": "MH",
+    "NH": "MH",
     # Uttar Pradesh (UP)
-    "0P": "UP", "OP": "UP",
+    "0P": "UP",
+    "OP": "UP",
     # Andhra Pradesh (AP)
     "4P": "AP",
     # Gujarat (GJ)
-    "6J": "GJ", "CJ": "GJ",
+    "6J": "GJ",
+    "CJ": "GJ",
     # Rajasthan (RJ)
     "8J": "RJ",
     # Punjab (PB)
@@ -208,16 +266,16 @@ STATE_PREFIX_CORRECTIONS: dict[str, str] = {
 }
 
 
-def compute_box_iou(b1, b2) -> float:
+def compute_box_iou(b1: Any, b2: Any) -> float:
     """
     Compute Intersection-over-Union (IoU) between two bounding box objects.
     Both b1 and b2 are expected to have x1, y1, x2, y2 attributes.
     """
-    xA = max(b1.x1, b2.x1)
-    yA = max(b1.y1, b2.y1)
-    xB = min(b1.x2, b2.x2)
-    yB = min(b1.y2, b2.y2)
-    inter = max(0, xB - xA) * max(0, yB - yA)
+    x_a = max(b1.x1, b2.x1)
+    y_a = max(b1.y1, b2.y1)
+    x_b = min(b1.x2, b2.x2)
+    y_b = min(b1.y2, b2.y2)
+    inter = max(0, x_b - x_a) * max(0, y_b - y_a)
     area1 = max(1, (b1.x2 - b1.x1) * (b1.y2 - b1.y1))
     area2 = max(1, (b2.x2 - b2.x1) * (b2.y2 - b2.y1))
     union = area1 + area2 - inter
@@ -251,11 +309,6 @@ def split_two_row_crop(
     return img[:top_end, :], img[bot_start:, :]
 
 
-from collections import deque
-from dataclasses import dataclass
-from typing import Any
-
-
 @dataclass
 class TrackedPlate:
     """State for a single tracked license plate across video frames."""
@@ -265,7 +318,7 @@ class TrackedPlate:
     display_text: str
     display_conf: float
     last_seen: int
-    readings: deque
+    readings: deque[tuple[str, float]]
 
 
 class PlateTracker:
@@ -321,10 +374,9 @@ class PlateTracker:
                 tcx, tcy = (tb.x1 + tb.x2) / 2.0, (tb.y1 + tb.y2) / 2.0
                 cdist = ((cx - tcx) ** 2 + (cy - tcy) ** 2) ** 0.5
 
-                if iou > 0.15 or (cdist < max_c_dist and iou > 0.05):
-                    if iou > best_iou:
-                        best_iou = iou
-                        best_match_id = tid
+                if (iou > 0.15 or (cdist < max_c_dist and iou > 0.05)) and iou > best_iou:
+                    best_iou = iou
+                    best_match_id = tid
 
             if best_match_id is not None:
                 track = self.tracks[best_match_id]
@@ -341,7 +393,7 @@ class PlateTracker:
             else:
                 new_id = self.next_id
                 self.next_id += 1
-                rd: deque = deque([(text, conf)], maxlen=self.window_size)
+                rd: deque[tuple[str, float]] = deque([(text, conf)], maxlen=self.window_size)
                 self.tracks[new_id] = TrackedPlate(
                     track_id=new_id,
                     box=box,
@@ -356,6 +408,7 @@ class PlateTracker:
         return updated_results
 
 
+# ruff: noqa: PLR0912
 def heal_indian_plate(text: str) -> str:
     """
     Auto-heal common character recognition confusions for Indian license plates
@@ -376,13 +429,14 @@ def heal_indian_plate(text: str) -> str:
         p_corr = STATE_PREFIX_CORRECTIONS.get(prefix, prefix)
         c0 = DIGIT_TO_LETTER.get(clean[0], clean[0])
         c1 = DIGIT_TO_LETTER.get(clean[1], clean[1])
-        if p_corr in INDIAN_STATE_CODES or (c0 + c1) in INDIAN_STATE_CODES:
-            if sum(c.isdigit() for c in clean[-4:]) >= 3:
-                mid = clean[4:7]
-                for i, c in enumerate(mid):
-                    if c.isdigit():
-                        clean = clean[:4 + i] + clean[4 + i + 1:]
-                        break
+        if (p_corr in INDIAN_STATE_CODES or (c0 + c1) in INDIAN_STATE_CODES) and sum(
+            c.isdigit() for c in clean[-4:]
+        ) >= 3:
+            mid = clean[4:7]
+            for i, c in enumerate(mid):
+                if c.isdigit():
+                    clean = clean[: 4 + i] + clean[4 + i + 1 :]
+                    break
 
     if len(clean) not in (7, 8, 9, 10):
         return clean
@@ -437,7 +491,7 @@ def heal_indian_plate(text: str) -> str:
 
 def disambiguate_plate(
     text: str,
-    pattern_mask: str | list[str] | None = None,
+    pattern_mask: str | Sequence[str] | None = None,
     custom_letter_to_digit: dict[str, str] | None = None,
     custom_digit_to_letter: dict[str, str] | None = None,
 ) -> str:
@@ -467,15 +521,11 @@ def disambiguate_plate(
         return clean_text
 
     # Normalise to a list of masks
-    masks: list[str] = (
-        [pattern_mask] if isinstance(pattern_mask, str) else list(pattern_mask)
-    )
+    masks: list[str] = [pattern_mask] if isinstance(pattern_mask, str) else list(pattern_mask)
 
     # Filter candidate masks matching length
     candidates = [
-        m.replace(" ", "").upper()
-        for m in masks
-        if len(m.replace(" ", "")) == len(clean_text)
+        m.replace(" ", "").upper() for m in masks if len(m.replace(" ", "")) == len(clean_text)
     ]
     if not candidates:
         return clean_text

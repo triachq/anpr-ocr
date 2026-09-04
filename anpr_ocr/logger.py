@@ -15,7 +15,7 @@ from typing import Any
 import cv2
 import numpy as np
 
-from anpr_ocr.utils import INDIAN_STATE_NAMES, get_state_name
+from anpr_ocr.utils import get_state_name
 
 
 def is_similar_plate(p1: str, p2: str, threshold: float = 0.75) -> bool:
@@ -114,10 +114,11 @@ class PlateLogger:
         # Check if this detection matches an active vehicle event
         matched: VehicleRecord | None = None
         for ev in self.events:
-            if (frame_idx - ev.last_frame) <= self.max_frame_gap:
-                if is_similar_plate(ev.plate_number, clean_text):
-                    matched = ev
-                    break
+            if frame_idx - ev.last_frame <= self.max_frame_gap and is_similar_plate(
+                ev.plate_number, clean_text
+            ):
+                matched = ev
+                break
 
         if matched is not None:
             matched.last_frame = frame_idx
@@ -158,13 +159,11 @@ class PlateLogger:
         Filter and finalize all logged vehicle events, sorting by time of first appearance.
         Returns only genuine vehicles meeting the confidence and consistency thresholds.
         """
-        valid: list[VehicleRecord] = []
-        for ev in self.events:
-            # Must meet minimum confidence and not be a 1-frame spurious blur
-            if ev.confidence >= self.min_conf:
-                if ev.frames_observed >= 2 or ev.confidence >= 0.85:
-                    valid.append(ev)
-
+        valid = [
+            ev
+            for ev in self.events
+            if ev.confidence >= self.min_conf and (ev.frames_observed >= 2 or ev.confidence >= 0.85)
+        ]
         valid.sort(key=lambda x: x.first_frame)
         return valid
 
@@ -181,7 +180,7 @@ class PlateLogger:
 
         for idx, ev in enumerate(self.finalize(), 1):
             if ev.crop_image is not None and ev.crop_image.size > 0:
-                conf_pct = int(round(ev.confidence * 100))
+                conf_pct = round(ev.confidence * 100)
                 fname = f"vehicle_{idx:02d}_{ev.plate_number}_{conf_pct}pct.jpg"
                 save_path = target_dir / fname
                 cv2.imwrite(str(save_path), ev.crop_image)
@@ -207,29 +206,33 @@ class PlateLogger:
 
         with open(target, mode="w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
-            writer.writerow([
-                "Vehicle #",
-                "Plate Number",
-                "Peak Confidence",
-                "State / Region",
-                "Video Timestamp",
-                "Peak Frame",
-                "Detected At (Real Time)",
-                "Frames Observed",
-                "Snapshot File",
-            ])
+            writer.writerow(
+                [
+                    "Vehicle #",
+                    "Plate Number",
+                    "Peak Confidence",
+                    "State / Region",
+                    "Video Timestamp",
+                    "Peak Frame",
+                    "Detected At (Real Time)",
+                    "Frames Observed",
+                    "Snapshot File",
+                ]
+            )
             for idx, ev in enumerate(finalized, 1):
-                writer.writerow([
-                    idx,
-                    ev.plate_number,
-                    f"{ev.confidence * 100:.1f}%",
-                    ev.state_region,
-                    ev.video_time,
-                    ev.frame_index,
-                    ev.detected_at,
-                    ev.frames_observed,
-                    ev.snapshot_path or "N/A",
-                ])
+                writer.writerow(
+                    [
+                        idx,
+                        ev.plate_number,
+                        f"{ev.confidence * 100:.1f}%",
+                        ev.state_region,
+                        ev.video_time,
+                        ev.frame_index,
+                        ev.detected_at,
+                        ev.frames_observed,
+                        ev.snapshot_path or "N/A",
+                    ]
+                )
 
         return target
 
@@ -245,13 +248,13 @@ class PlateLogger:
             "=" * 92,
             f"  FINAL VEHICLE LOG -- {len(finalized)} Unique Vehicle(s) Detected at Peak Accuracy",
             "=" * 92,
-            f"{'#':<3} | {'Plate Number':<14} | {'Peak Conf':<10} | {'State / Region':<22} | {'Video Time':<10} | {'Frames':<6}",
+            f"{'#':<3} | {'Plate Number':<14} | {'Peak Conf':<10} | {'State / Region':<22} | {'Video Time':<10} | {'Frames':<6}",  # noqa: E501
             "-" * 92,
         ]
         for idx, ev in enumerate(finalized, 1):
             conf_str = f"{ev.confidence * 100:.1f}%"
             lines.append(
-                f"{idx:<3} | {ev.plate_number:<14} | {conf_str:<10} | {ev.state_region:<22} | {ev.video_time:<10} | {ev.frames_observed:<6}"
+                f"{idx:<3} | {ev.plate_number:<14} | {conf_str:<10} | {ev.state_region:<22} | {ev.video_time:<10} | {ev.frames_observed:<6}"  # noqa: E501
             )
         lines.append("=" * 92)
         return "\n".join(lines)

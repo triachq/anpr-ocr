@@ -15,7 +15,6 @@ from open_image_models.detection.core.hub import PlateDetectorModel
 
 from anpr_ocr import ALPR, ALPRResult
 
-# ruff: noqa: PLR0913
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_IMAGE = PROJECT_ROOT / "assets" / "test2.png"
@@ -61,7 +60,8 @@ def _build_parser() -> argparse.ArgumentParser:
         type=Path,
         help=(
             "Output path for single image (e.g. artifacts/result.png) "
-            "or directory for batch (default: artifacts/test2-result.png or artifacts/batch_results/)."
+            "or directory for batch (default: artifacts/test2-result.png "
+            "or artifacts/batch_results/)."
         ),
     )
     parser.add_argument(
@@ -201,7 +201,7 @@ def run_batch_demo(
     total_plates = 0
     start_time = time.perf_counter()
 
-    for idx, img_path in enumerate(image_paths, start=1):
+    for _idx, img_path in enumerate(image_paths, start=1):
         if not img_path.is_file():
             continue
         try:
@@ -211,7 +211,7 @@ def run_batch_demo(
 
             payload = _result_payload(drawn.results)
             plates_str = ", ".join(
-                f"{p['plate'] or '?'} ({((p['ocr_confidence'] or 0)*100):.0f}%)" for p in payload
+                f"{p['plate'] or '?'} ({((p['ocr_confidence'] or 0) * 100):.0f}%)" for p in payload
             )
             total_plates += len(payload)
 
@@ -263,7 +263,7 @@ def run_batch_demo(
                     ]
                 )
 
-    print(f"\nSaved Reports:")
+    print("\nSaved Reports:")
     print(f"  - Annotated images: {images_dir}")
     print(f"  - JSON Report:      {json_report_path}")
     print(f"  - CSV Report:       {csv_report_path}\n")
@@ -281,9 +281,11 @@ def main() -> int:
     for item in args.images:
         path = item.resolve()
         if path.is_dir():
-            for child in sorted(path.iterdir()):
-                if child.suffix.lower() in SUPPORTED_IMAGE_EXTS:
-                    resolved_paths.append(child)
+            resolved_paths.extend(
+                child
+                for child in sorted(path.iterdir())
+                if child.suffix.lower() in SUPPORTED_IMAGE_EXTS
+            )
         elif path.is_file():
             resolved_paths.append(path)
         elif "*" in str(item) or "?" in str(item):

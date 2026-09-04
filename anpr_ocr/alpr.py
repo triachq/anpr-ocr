@@ -5,7 +5,7 @@ ALPR module.
 import os
 import statistics
 import time
-from collections.abc import Generator, Sequence
+from collections.abc import Callable, Generator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -24,7 +24,7 @@ from anpr_ocr.utils import PlateTracker, disambiguate_plate, pad_bounding_box
 
 
 # pylint: disable=too-many-arguments, too-many-locals
-# ruff: noqa: PLR0913
+# ruff: noqa: PLR0913, PLR0912, PLR0915
 
 SUPPORTED_VIDEO_EXTS = {".mp4", ".avi", ".mkv", ".mov", ".webm", ".flv", ".wmv", ".m4v"}
 """Video file extensions supported for inference."""
@@ -105,7 +105,7 @@ class ALPR:
         detector_model: PlateDetectorModel = "yolo-v9-s-608-license-plate-end2end",
         detector_conf_thresh: float = 0.4,
         detector_providers: Sequence[str | tuple[str, dict]] | None = None,
-        detector_sess_options: ort.SessionOptions = None,
+        detector_sess_options: ort.SessionOptions | None = None,
         ocr_model: OcrModel | None = "cct-s-v2-global-model",
         ocr_device: Literal["cuda", "cpu", "auto"] = "auto",
         ocr_providers: Sequence[str | tuple[str, dict]] | None = None,
@@ -116,7 +116,7 @@ class ALPR:
         crop_margin: float = 0.05,
         enhance_contrast: bool = False,
         min_plate_width: int = 0,
-        syntax_pattern: str | None = None,
+        syntax_pattern: str | Sequence[str] | None = None,
     ) -> None:
         """
         Initialize the ALPR system.
@@ -368,10 +368,7 @@ class ALPR:
         Returns:
             A list of DrawPredictionsResult for each image.
         """
-        return [
-            self.draw_predictions(str(f) if isinstance(f, os.PathLike) else f)
-            for f in frames
-        ]
+        return [self.draw_predictions(str(f) if isinstance(f, os.PathLike) else f) for f in frames]
 
     # -- Video methods -------------------------------------------------------
 
@@ -434,10 +431,10 @@ class ALPR:
         output_path: str | os.PathLike | None = None,
         frame_skip: int = 1,
         codec: str | None = None,
-        show_region: bool = False,
+        show_region: bool = False,  # noqa: ARG002
         min_chars: int = 3,
         min_conf: float = 0.35,
-        progress_callback: type[None] | object = None,
+        progress_callback: Callable[[int, int], None] | None = None,
         logger: PlateLogger | None = None,
     ) -> VideoResult:
         """
@@ -488,7 +485,7 @@ class ALPR:
 
             # Resolve codec
             fourcc_str = codec or _CODEC_MAP.get(out.suffix.lower(), "mp4v")
-            fourcc = cv2.VideoWriter_fourcc(*fourcc_str)
+            fourcc = cv2.VideoWriter.fourcc(*fourcc_str)
             writer = cv2.VideoWriter(str(out), fourcc, fps, (width, height))
             if not writer.isOpened():
                 raise RuntimeError(
@@ -546,14 +543,22 @@ class ALPR:
                             )
                         orig_res = det_map.get(id(box))
                         reg = orig_res.ocr.region if orig_res and orig_res.ocr else None
-                        reg_c = orig_res.ocr.region_confidence if orig_res and orig_res.ocr else None
+                        reg_c = (
+                            orig_res.ocr.region_confidence if orig_res and orig_res.ocr else None
+                        )
                         smoothed_ocr = OcrResult(
                             text=display_text,
                             confidence=display_conf,
                             region=reg,
                             region_confidence=reg_c,
                         )
-                        orig_det = orig_res.detection if orig_res else DetectionResult(bounding_box=box, confidence=1.0)
+                        orig_det = (
+                            orig_res.detection
+                            if orig_res
+                            else DetectionResult(
+                                label="license-plate", confidence=1.0, bounding_box=box
+                            )
+                        )
                         smoothed_results.append(ALPRResult(detection=orig_det, ocr=smoothed_ocr))
 
                     # 2. Draw annotations on frame
@@ -608,7 +613,7 @@ class ALPR:
                 else:
                     writer.write(frame)
 
-                if callable(progress_callback):
+                if progress_callback is not None:
                     progress_callback(frame_idx + 1, total_frames)
 
                 frame_idx += 1
@@ -627,4 +632,3 @@ class ALPR:
             )
         finally:
             cap.release()
-

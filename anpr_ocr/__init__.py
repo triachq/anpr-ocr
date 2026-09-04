@@ -22,4 +22,3 @@ __all__ = [
     "enhance_plate_image",
     "pad_bounding_box",
 ]
-

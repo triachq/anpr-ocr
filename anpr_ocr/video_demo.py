@@ -7,13 +7,17 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import cast
+from collections.abc import Callable
+from typing import Any, cast
 
 from fast_plate_ocr.inference.hub import OcrModel
 from open_image_models.detection.core.hub import PlateDetectorModel
 
-from anpr_ocr import ALPR, PlateLogger, VehicleRecord
+from anpr_ocr import ALPR, PlateLogger
 from anpr_ocr.alpr import SUPPORTED_VIDEO_EXTS
+
+# pylint: disable=too-many-branches, too-many-statements, import-outside-toplevel
+# ruff: noqa: PLR0912, PLR0915, PLC0415, E501, ARG001
 
 # Force UTF-8 output on Windows
 if sys.platform == "win32":
@@ -28,12 +32,12 @@ OUTPUT_DIR = PROJECT_ROOT / "artifacts" / "video_results"
 # Common Indian & international plate syntax patterns for disambiguation
 PLATE_PATTERNS = [
     "LLDDLLDDDD",  # 10-char: MH12DE1433, HR36AE7971
-    "LLDDLDDDD",   # 9-char:  TN45Q3566
-    "LLDDDDDD",    # 8-char:  LA020749
-    "LLDDDDD",     # 7-char:  IN03044
-    "DLLDDDD",     # 7-char:  5AU5341
-    "LLDDLLL",     # 7-char:  LB02APF
-    "LLLDDD",      # 6-char:  IZX842
+    "LLDDLDDDD",  # 9-char:  TN45Q3566
+    "LLDDDDDD",  # 8-char:  LA020749
+    "LLDDDDD",  # 7-char:  IN03044
+    "DLLDDDD",  # 7-char:  5AU5341
+    "LLDDLLL",  # 7-char:  LB02APF
+    "LLLDDD",  # 6-char:  IZX842
 ]
 
 # -- ANSI colors (enable on Windows) -----------------------------------------
@@ -157,7 +161,7 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _make_progress_callback(total_frames: int):
+def _make_progress_callback(total_frames: int) -> Callable[[int, int], None]:
     """Return a callback that prints a live progress bar."""
     last_pct = [-1]  # mutable to capture in closure
     start = time.perf_counter()
@@ -210,7 +214,7 @@ def _play_video_live(
     from anpr_ocr.utils import PlateTracker
 
     tracker = PlateTracker(max_unseen_frames=frame_skip * 5, window_size=5)
-    active_plates: list[tuple] = []
+    active_plates: list[tuple[Any, str, float]] = []
     frame_idx = 0
     t_start = time.perf_counter()
 
@@ -261,19 +265,35 @@ def _play_video_live(
             cv2.rectangle(display, (b.x1, b.y1), (b.x2, b.y2), (36, 255, 12), 2)
             lbl = f"{txt} {c * 100:.0f}%"
             cv2.putText(
-                display, lbl, (b.x1, max(b.y1 - 10, 25)),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 0), 4, cv2.LINE_AA
+                display,
+                lbl,
+                (b.x1, max(b.y1 - 10, 25)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.9,
+                (0, 0, 0),
+                4,
+                cv2.LINE_AA,
             )
             cv2.putText(
-                display, lbl, (b.x1, max(b.y1 - 10, 25)),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2, cv2.LINE_AA
+                display,
+                lbl,
+                (b.x1, max(b.y1 - 10, 25)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.9,
+                (255, 255, 255),
+                2,
+                cv2.LINE_AA,
             )
 
         # HUD Banner
         veh_count = len(logger.finalize()) if logger is not None else 0
         hud = f"Live FPS: {fps_live:.1f} | Frame: {frame_idx} | Vehicles: {veh_count} | [SPACE] Pause | [Q] Quit"
-        cv2.putText(display, hud, (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.85, (0, 0, 0), 4, cv2.LINE_AA)
-        cv2.putText(display, hud, (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.85, (0, 255, 255), 2, cv2.LINE_AA)
+        cv2.putText(
+            display, hud, (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.85, (0, 0, 0), 4, cv2.LINE_AA
+        )
+        cv2.putText(
+            display, hud, (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.85, (0, 255, 255), 2, cv2.LINE_AA
+        )
 
         cv2.imshow(win_name, display)
         key = cv2.waitKey(frame_delay) & 0xFF
@@ -284,8 +304,26 @@ def _play_video_live(
             while paused:
                 pause_display = display.copy()
                 pause_hud = f"[PAUSED] Frame: {frame_idx} | Vehicles: {veh_count} | [SPACE] Resume | [N] Step Next | [Q] Quit"
-                cv2.putText(pause_display, pause_hud, (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.85, (0, 0, 0), 4, cv2.LINE_AA)
-                cv2.putText(pause_display, pause_hud, (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.85, (0, 165, 255), 2, cv2.LINE_AA)
+                cv2.putText(
+                    pause_display,
+                    pause_hud,
+                    (20, 40),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.85,
+                    (0, 0, 0),
+                    4,
+                    cv2.LINE_AA,
+                )
+                cv2.putText(
+                    pause_display,
+                    pause_hud,
+                    (20, 40),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.85,
+                    (0, 165, 255),
+                    2,
+                    cv2.LINE_AA,
+                )
                 cv2.imshow(win_name, pause_display)
                 p_key = cv2.waitKey(30) & 0xFF
                 if p_key in (ord("q"), ord("Q"), 27):
@@ -298,11 +336,15 @@ def _play_video_live(
                         if logger.output_csv:
                             csv_p = logger.export_csv()
                             if csv_p:
-                                print(f"  {GREEN}[LOG]{RESET} Finalized peak plate log saved to: {csv_p}")
+                                print(
+                                    f"  {GREEN}[LOG]{RESET} Finalized peak plate log saved to: {csv_p}"
+                                )
                         if logger.snapshots_dir:
                             snaps = logger.save_snapshots()
                             if snaps:
-                                print(f"  {GREEN}[LOG]{RESET} Saved {len(snaps)} vehicle plate snapshot(s) to: {logger.snapshots_dir}")
+                                print(
+                                    f"  {GREEN}[LOG]{RESET} Saved {len(snaps)} vehicle plate snapshot(s) to: {logger.snapshots_dir}"
+                                )
                         print()
                     return
                 elif p_key in (ord(" "), ord("p"), ord("P")):
@@ -328,7 +370,9 @@ def _play_video_live(
         if logger.snapshots_dir:
             snaps = logger.save_snapshots()
             if snaps:
-                print(f"  {GREEN}[LOG]{RESET} Saved {len(snaps)} vehicle plate snapshot(s) to: {logger.snapshots_dir}")
+                print(
+                    f"  {GREEN}[LOG]{RESET} Saved {len(snaps)} vehicle plate snapshot(s) to: {logger.snapshots_dir}"
+                )
         print()
 
 
@@ -336,10 +380,7 @@ def main() -> int:
     args = _build_parser().parse_args()
 
     # -- Resolve video files -------------------------------------------------
-    if args.video is None:
-        target = DEFAULT_VIDEOS_DIR
-    else:
-        target = args.video.resolve()
+    target = DEFAULT_VIDEOS_DIR if args.video is None else args.video.resolve()
 
     video_files: list[Path] = []
     if target.is_dir():
@@ -388,9 +429,12 @@ def main() -> int:
     providers = None
     if args.directml:
         import onnxruntime as ort
+
         if "DmlExecutionProvider" in ort.get_available_providers():
             providers = ["DmlExecutionProvider", "CPUExecutionProvider"]
-            print(f"  {GREEN}[GPU] DirectML hardware acceleration ENABLED (Intel Iris Xe / GPU){RESET}")
+            print(
+                f"  {GREEN}[GPU] DirectML hardware acceleration ENABLED (Intel Iris Xe / GPU){RESET}"
+            )
         else:
             print(f"  {YELLOW}[WARN] DirectML provider not available, falling back to CPU{RESET}")
 
@@ -412,7 +456,6 @@ def main() -> int:
 
     # -- Process videos ------------------------------------------------------
     import cv2
-    import statistics
 
     all_results = []
     total_pipeline_time = 0.0
@@ -436,7 +479,9 @@ def main() -> int:
         else:
             csv_path = None
 
-        snapshots_dir = (output_path.parent / f"{video_path.stem}_snapshots") if args.snapshots else None
+        snapshots_dir = (
+            (output_path.parent / f"{video_path.stem}_snapshots") if args.snapshots else None
+        )
 
         logger = PlateLogger(
             output_csv=csv_path,
@@ -464,7 +509,9 @@ def main() -> int:
         cap.release()
 
         print(f"  {BOLD}[{idx}/{len(video_files)}] Processing: {video_path.name}{RESET}")
-        print(f"      {DIM}Resolution:{RESET} {width}x{height} @ {src_fps:.1f} fps, {total_frames} frames")
+        print(
+            f"      {DIM}Resolution:{RESET} {width}x{height} @ {src_fps:.1f} fps, {total_frames} frames"
+        )
         print(f"      {DIM}Saving to:{RESET}  {output_path.name}")
 
         progress = _make_progress_callback(total_frames)
@@ -497,11 +544,15 @@ def main() -> int:
         if csv_path:
             saved_csv = logger.export_csv()
             if saved_csv:
-                print(f"      {GREEN}[LOG]{RESET} Finalized peak plate log saved to: {saved_csv.name}")
+                print(
+                    f"      {GREEN}[LOG]{RESET} Finalized peak plate log saved to: {saved_csv.name}"
+                )
         if snapshots_dir:
             snaps = logger.save_snapshots()
             if snaps:
-                print(f"      {GREEN}[LOG]{RESET} Saved {len(snaps)} peak plate snapshot(s) to: {snapshots_dir.name}/")
+                print(
+                    f"      {GREEN}[LOG]{RESET} Saved {len(snaps)} peak plate snapshot(s) to: {snapshots_dir.name}/"
+                )
         print()
         all_results.append(result)
 
@@ -509,7 +560,9 @@ def main() -> int:
     total_frames_all = sum(r.total_frames for r in all_results)
     proc_frames_all = sum(r.processed_frames for r in all_results)
     plates_all = sum(r.total_plates_detected for r in all_results)
-    unique_vehicles_all = sum(len(r.vehicle_records) for r in all_results if r.vehicle_records is not None)
+    unique_vehicles_all = sum(
+        len(r.vehicle_records) for r in all_results if r.vehicle_records is not None
+    )
     overall_fps = proc_frames_all / total_pipeline_time if total_pipeline_time > 0 else 0
 
     print(f"{BOLD}{CYAN}{'=' * 72}{RESET}")
@@ -519,7 +572,9 @@ def main() -> int:
     print(f"  {BOLD}Total frames:{RESET}           {total_frames_all}")
     print(f"  {BOLD}Processed frames:{RESET}       {proc_frames_all}")
     print(f"  {BOLD}Total plates detected:{RESET}  {plates_all}")
-    print(f"  {BOLD}Unique vehicles logged:{RESET} {unique_vehicles_all} (peak confidence deduplicated)")
+    print(
+        f"  {BOLD}Unique vehicles logged:{RESET} {unique_vehicles_all} (peak confidence deduplicated)"
+    )
     print(f"  {BOLD}Total processing time:{RESET}  {total_pipeline_time:.2f}s")
     print(f"  {BOLD}Effective throughput:{RESET}   {overall_fps:.1f} fps")
     print()

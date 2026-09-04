@@ -13,14 +13,20 @@ from fast_plate_ocr import LicensePlateRecognizer
 from fast_plate_ocr.inference.hub import OcrModel
 
 from anpr_ocr.base import BaseOCR, OcrResult
-from anpr_ocr.utils import disambiguate_plate, enhance_plate_image
+from anpr_ocr.utils import (
+    INDIAN_STATE_CODES,
+    disambiguate_plate,
+    enhance_plate_image,
+    heal_indian_plate,
+    is_two_row_plate,
+    split_two_row_crop,
+)
 
 # pylint: disable=too-many-arguments
 # ruff: noqa: PLR0913
 
 
 class DefaultOCR(BaseOCR):
-
     """
     Default OCR class for license plate recognition using `fast-plate-ocr` models.
     """
@@ -36,7 +42,7 @@ class DefaultOCR(BaseOCR):
         force_download: bool = False,
         enhance_contrast: bool = False,
         min_plate_width: int = 0,
-        syntax_pattern: str | None = None,
+        syntax_pattern: str | Sequence[str] | None = None,
     ) -> None:
         """
         Initialize the DefaultOCR with the specified parameters. Uses `fast-plate-ocr`'s
@@ -123,15 +129,17 @@ class DefaultOCR(BaseOCR):
         t1, c1, r1, rp1 = self._run_single_crop(cropped_plate)
         if self.syntax_pattern and t1:
             t1 = disambiguate_plate(t1, self.syntax_pattern)
-        from anpr_ocr.utils import INDIAN_STATE_CODES, heal_indian_plate, is_two_row_plate, split_two_row_crop
+
         h1 = heal_indian_plate(t1)
         mean_c1 = (sum(c1) / len(c1)) if c1 else 0.0
 
         # 2. Check for square / 2-row plate (e.g. auto-rickshaws, motorbikes)
         if is_two_row_plate(w, h):
-            top_crop, bot_crop = split_two_row_crop(cropped_plate, top_fraction=0.52, bot_fraction=0.48)
+            top_crop, bot_crop = split_two_row_crop(
+                cropped_plate, top_fraction=0.52, bot_fraction=0.48
+            )
             tt, ct, rt, rpt = self._run_single_crop(top_crop)
-            tb, cb, rb, rpb = self._run_single_crop(bot_crop)
+            tb, cb, _rb, _rpb = self._run_single_crop(bot_crop)
 
             if len(tt) >= 2 and len(tb) >= 2:
                 t2 = tt + tb
@@ -142,19 +150,25 @@ class DefaultOCR(BaseOCR):
                 mean_c2 = (sum(c2) / len(c2)) if c2 else 0.0
 
                 # Prefer 2-row if:
-                # a) 2-row resolves to a valid Indian state plate (e.g. KA01AL6528) and 1-row does not
-                # b) Both are valid Indian state plates, prefer longer / higher-confidence plate
-                # c) 1-row confidence is weak (< 0.65) and 2-row has strong confidence (>= 0.80) with reasonable length
+                # a) 2-row resolves to valid Indian state plate and 1-row does not
+                # b) Both are valid Indian state plates, prefer longer / higher confidence
+                # c) 1-row confidence is weak (<0.65) and 2-row has strong confidence (>=0.80)
                 is_valid_indian_2row = len(h2) in (8, 9, 10) and h2[:2] in INDIAN_STATE_CODES
                 is_valid_indian_1row = len(h1) in (8, 9, 10) and h1[:2] in INDIAN_STATE_CODES
 
                 if is_valid_indian_2row and not is_valid_indian_1row:
-                    return OcrResult(text=h2, confidence=c2, region=rt or r1, region_confidence=rpt or rp1)
+                    return OcrResult(
+                        text=h2, confidence=c2, region=rt or r1, region_confidence=rpt or rp1
+                    )
                 elif is_valid_indian_2row and is_valid_indian_1row:
                     if len(h2) > len(h1) or (len(h2) == len(h1) and mean_c2 > mean_c1):
-                        return OcrResult(text=h2, confidence=c2, region=rt or r1, region_confidence=rpt or rp1)
+                        return OcrResult(
+                            text=h2, confidence=c2, region=rt or r1, region_confidence=rpt or rp1
+                        )
                 elif mean_c1 < 0.65 and mean_c2 >= 0.80 and len(t2) <= 10:
-                    return OcrResult(text=h2, confidence=c2, region=rt or r1, region_confidence=rpt or rp1)
+                    return OcrResult(
+                        text=h2, confidence=c2, region=rt or r1, region_confidence=rpt or rp1
+                    )
 
         return OcrResult(
             text=h1,
@@ -162,4 +176,3 @@ class DefaultOCR(BaseOCR):
             region=r1,
             region_confidence=rp1,
         )
-
