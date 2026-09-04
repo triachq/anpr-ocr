@@ -139,6 +139,27 @@ uv run anpr-ocr-showcase path/to/car.jpg \
   --output artifacts/car-result.png
 ```
 
+### 🎬 Real-Time Video Inference & Live Playback
+
+`anpr-ocr` provides a high-throughput video inference pipeline with temporal tracking, multi-frame consensus voting, and automated vehicle logging:
+
+```shell
+# Live GUI playback with DirectML GPU acceleration
+uv run video-demo --play --directml --frame-skip 2
+
+# Process a specific video and export an annotated MP4 + peak-score CSV log
+uv run video-demo data/videos/sample.mp4 --snapshots --enhance-contrast
+```
+
+#### Key Video Features:
+- **Temporal IoU Tracking**: Bounding-box IoU association prevents zombie track hopping between adjacent lanes.
+- **Rolling Consensus Voting**: Stabilizes text recognition across consecutive frames to prevent momentary OCR flicker.
+- **Two-Row Plate Recognition**: Automatically splits and reads stacked two-row plates (e.g. auto-rickshaws, commercial trucks).
+- **Peak-Score Vehicle Logging (`PlateLogger`)**: Records only the single highest-confidence reading per car across all frames into a timestamped CSV, avoiding duplicate entries.
+- **Evidence Snapshots**: Saves cropped, high-resolution plate images for each detected vehicle.
+- **Interactive GUI Controls**: Press `SPACE` to pause/resume, `S` to step frame-by-frame, and `Q` to exit.
+
+
 ## 🛠️ Customization and Flexibility
 
 anpr-ocr is designed to be flexible. You can customize the detector and OCR models according to your requirements.

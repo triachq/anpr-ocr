@@ -222,3 +222,7 @@ trt_engine_cache/
 tensorrt/
 
 data/test_dataset/
+
+# Video inference inputs and outputs
+data/videos/
+artifacts/video_results/
