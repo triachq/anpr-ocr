@@ -4,8 +4,10 @@ ALPR module.
 
 import os
 import statistics
-from collections.abc import Sequence
+import time
+from collections.abc import Generator, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal
 
 import cv2
@@ -17,11 +19,25 @@ from open_image_models.detection.core.hub import PlateDetectorModel
 from anpr_ocr.base import BaseDetector, BaseOCR, DetectionResult, OcrResult
 from anpr_ocr.default_detector import DefaultDetector
 from anpr_ocr.default_ocr import DefaultOCR
-from anpr_ocr.utils import disambiguate_plate, pad_bounding_box
+from anpr_ocr.logger import PlateLogger, VehicleRecord
+from anpr_ocr.utils import PlateTracker, disambiguate_plate, pad_bounding_box
 
 
 # pylint: disable=too-many-arguments, too-many-locals
 # ruff: noqa: PLR0913
+
+SUPPORTED_VIDEO_EXTS = {".mp4", ".avi", ".mkv", ".mov", ".webm", ".flv", ".wmv", ".m4v"}
+"""Video file extensions supported for inference."""
+
+# Default fourcc codecs by output extension
+_CODEC_MAP: dict[str, str] = {
+    ".mp4": "mp4v",
+    ".avi": "XVID",
+    ".mkv": "mp4v",
+    ".mov": "mp4v",
+    ".webm": "VP80",
+    ".wmv": "WMV2",
+}
 
 
 @dataclass(frozen=True)
@@ -50,6 +66,29 @@ class DrawPredictionsResult:
 
     image: np.ndarray
     results: list[ALPRResult]
+
+
+@dataclass(frozen=True, slots=True)
+class VideoResult:
+    """
+    Summary statistics returned after processing a video.
+
+    Attributes:
+        output_path: Path to the annotated output video file.
+        total_frames: Total number of frames in the source video.
+        processed_frames: Number of frames that were run through the ALPR pipeline.
+        total_plates_detected: Cumulative count of plates detected across all processed frames.
+        processing_time_seconds: Wall-clock time spent processing the video.
+        fps_processing: Effective processing throughput in frames per second.
+    """
+
+    output_path: str
+    total_frames: int
+    processed_frames: int
+    total_plates_detected: int
+    processing_time_seconds: float
+    fps_processing: float
+    vehicle_records: list[VehicleRecord] | None = None
 
 
 class ALPR:
@@ -175,8 +214,8 @@ class ALPR:
             cropped_plate = img[y1:y2, x1:x2]
             ocr_result = self.ocr.predict(cropped_plate)
 
-            # Apply syntax disambiguation if configured on ALPR level and OCR didn't already
-            if self.syntax_pattern and ocr_result and ocr_result.text:
+            # Apply syntax disambiguation and auto-healing
+            if ocr_result and ocr_result.text:
                 disambiguated_text = disambiguate_plate(ocr_result.text, self.syntax_pattern)
                 if disambiguated_text != ocr_result.text:
                     ocr_result = OcrResult(
@@ -190,13 +229,22 @@ class ALPR:
             alpr_results.append(alpr_result)
         return alpr_results
 
-
-    def draw_predictions(self, frame: np.ndarray | str) -> DrawPredictionsResult:
+    def draw_predictions(
+        self,
+        frame: np.ndarray | str,
+        show_region: bool = False,
+        min_chars: int = 3,
+        min_conf: float = 0.35,
+    ) -> DrawPredictionsResult:
         """
         Draw detections and OCR results on an image.
 
         Parameters:
             frame: The original frame or image path.
+            show_region: Whether to display country/region prediction above the plate.
+                Defaults to False (disabled).
+            min_chars: Minimum recognized character count to display annotation.
+            min_conf: Minimum average OCR confidence to display annotation.
 
         Returns:
             A DrawPredictionsResult with the annotated image and the ALPR results.
@@ -212,26 +260,40 @@ class ALPR:
 
         # Get ALPR results using the ndarray
         alpr_results = self.predict(img)
+        drawn_results = []
 
         for result in alpr_results:
             detection = result.detection
             ocr_result = result.ocr
             bbox = detection.bounding_box
             x1, y1, x2, y2 = bbox.x1, bbox.y1, bbox.x2, bbox.y2
-            # Draw the bounding box
-            cv2.rectangle(img, (x1, y1), (x2, y2), (36, 255, 12), 2)
-            if ocr_result is None or not ocr_result.text or not ocr_result.confidence:
+
+            # Filter out spurious, empty, or sub-threshold plates
+            if ocr_result is None or not ocr_result.text:
                 continue
+            clean_text = ocr_result.text.strip()
+            if len(clean_text) < min_chars:
+                continue
+
             confidence: float = (
                 statistics.mean(ocr_result.confidence)
                 if isinstance(ocr_result.confidence, list)
-                else ocr_result.confidence
+                else (ocr_result.confidence or 0.0)
             )
+            if confidence < min_conf:
+                continue
+
+            drawn_results.append(result)
+
+            # Draw the bounding box
+            cv2.rectangle(img, (x1, y1), (x2, y2), (36, 255, 12), 2)
+
             font_scale = min(1.25, max(0.4, img.shape[1] / 1000))
             text_thickness = 1 if font_scale < 0.75 else 2
             outline_thickness = text_thickness + max(3, round(font_scale * 3))
-            display_lines = [f"{ocr_result.text} {confidence * 100:.0f}%"]
-            if ocr_result.region:
+            display_lines = [f"{clean_text} {confidence * 100:.0f}%"]
+
+            if show_region and ocr_result.region:
                 region_text = ocr_result.region
                 if ocr_result.region_confidence is not None:
                     region_text = f"{region_text} {ocr_result.region_confidence * 100:.0f}%"
@@ -278,7 +340,7 @@ class ALPR:
                     lineType=cv2.LINE_AA,
                 )
 
-        return DrawPredictionsResult(image=img, results=alpr_results)
+        return DrawPredictionsResult(image=img, results=drawn_results)
 
     def predict_batch(
         self, frames: Sequence[np.ndarray | str | os.PathLike]
@@ -310,4 +372,259 @@ class ALPR:
             self.draw_predictions(str(f) if isinstance(f, os.PathLike) else f)
             for f in frames
         ]
+
+    # -- Video methods -------------------------------------------------------
+
+    @staticmethod
+    def _open_video(source: str | os.PathLike) -> cv2.VideoCapture:
+        """Open a video file and validate it can be read."""
+        path = str(source)
+        ext = Path(path).suffix.lower()
+        if ext not in SUPPORTED_VIDEO_EXTS:
+            raise ValueError(
+                f"Unsupported video format '{ext}'. "
+                f"Supported: {', '.join(sorted(SUPPORTED_VIDEO_EXTS))}"
+            )
+        cap = cv2.VideoCapture(path)
+        if not cap.isOpened():
+            raise ValueError(f"Failed to open video: {path}")
+        return cap
+
+    def predict_video(
+        self,
+        source: str | os.PathLike,
+        frame_skip: int = 1,
+    ) -> Generator[tuple[int, list[ALPRResult]], None, None]:
+        """
+        Run plate detection and OCR on every *frame_skip*-th frame of a video.
+
+        This is a **generator** — it yields results lazily so arbitrarily long
+        videos can be processed without holding all frames in memory.
+
+        Parameters:
+            source: Path to a video file.
+            frame_skip: Process every Nth frame (1 = every frame, 2 = every
+                other frame, etc.). Must be >= 1.
+
+        Yields:
+            Tuples of ``(frame_index, results)`` where *frame_index* is the
+            0-based index of the frame in the video and *results* is the list of
+            ALPRResult objects for that frame.
+        """
+        if frame_skip < 1:
+            raise ValueError(f"frame_skip must be >= 1, got {frame_skip}")
+
+        cap = self._open_video(source)
+        try:
+            frame_idx = 0
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                if frame_idx % frame_skip == 0:
+                    results = self.predict(frame)
+                    yield frame_idx, results
+                frame_idx += 1
+        finally:
+            cap.release()
+
+    def draw_predictions_video(
+        self,
+        source: str | os.PathLike,
+        output_path: str | os.PathLike | None = None,
+        frame_skip: int = 1,
+        codec: str | None = None,
+        show_region: bool = False,
+        min_chars: int = 3,
+        min_conf: float = 0.35,
+        progress_callback: type[None] | object = None,
+        logger: PlateLogger | None = None,
+    ) -> VideoResult:
+        """
+        Read a video, draw ALPR annotations on each processed frame, and write
+        the result to an output video file.
+
+        Frames that are *not* processed (due to ``frame_skip``) are written
+        to the output unchanged so that the video plays back at the original
+        frame rate and duration.
+
+        Parameters:
+            source: Path to the input video file.
+            output_path: Where to write the annotated video.  If ``None``, the
+                output is saved next to the source with an ``_anpr`` suffix.
+            frame_skip: Run ALPR on every Nth frame (1 = every frame).
+                Non-processed frames are still written unmodified.
+            codec: FourCC codec string (e.g. ``'mp4v'``).  If ``None``, a
+                sensible default is chosen based on the output file extension.
+            show_region: Whether to display country/region prediction above the plate.
+                Defaults to False (disabled).
+            min_chars: Minimum recognized character count to display annotation.
+            min_conf: Minimum average OCR confidence to display annotation.
+            progress_callback: An optional callable that receives
+                ``(current_frame: int, total_frames: int)`` after each frame
+                is written.  Useful for progress bars.
+
+        Returns:
+            A :class:`VideoResult` with processing statistics.
+        """
+        if frame_skip < 1:
+            raise ValueError(f"frame_skip must be >= 1, got {frame_skip}")
+
+        source_path = Path(source)
+        cap = self._open_video(source)
+
+        try:
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+            # Resolve output path
+            if output_path is None:
+                out = source_path.with_stem(source_path.stem + "_anpr")
+            else:
+                out = Path(output_path)
+            out.parent.mkdir(parents=True, exist_ok=True)
+
+            # Resolve codec
+            fourcc_str = codec or _CODEC_MAP.get(out.suffix.lower(), "mp4v")
+            fourcc = cv2.VideoWriter_fourcc(*fourcc_str)
+            writer = cv2.VideoWriter(str(out), fourcc, fps, (width, height))
+            if not writer.isOpened():
+                raise RuntimeError(
+                    f"Failed to create video writer for {out} "
+                    f"(codec={fourcc_str}, {width}x{height} @ {fps:.1f}fps)"
+                )
+
+            processed_frames = 0
+            total_plates = 0
+            t0 = time.perf_counter()
+
+            # Multi-frame temporal voting tracker with IoU matching and rolling consensus
+            tracker = PlateTracker(max_unseen_frames=frame_skip * 5, window_size=5)
+
+            frame_idx = 0
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+
+                if frame_idx % frame_skip == 0:
+                    alpr_results = self.predict(frame)
+                    valid_dets = []
+                    det_map = {}
+
+                    for res in alpr_results:
+                        if not res.ocr or not res.ocr.text:
+                            continue
+                        clean_t = res.ocr.text.strip()
+                        if len(clean_t) < min_chars:
+                            continue
+                        c_val: float = (
+                            statistics.mean(res.ocr.confidence)
+                            if isinstance(res.ocr.confidence, list)
+                            else (res.ocr.confidence or 0.0)
+                        )
+                        if c_val < min_conf:
+                            continue
+                        b = res.detection.bounding_box
+                        valid_dets.append((b, clean_t, c_val))
+                        det_map[id(b)] = res
+
+                    tracked = tracker.update(valid_dets, frame_idx)
+                    smoothed_results: list[ALPRResult] = []
+
+                    for box, display_text, display_conf, _ in tracked:
+                        if logger is not None:
+                            logger.observe(
+                                plate_text=display_text,
+                                confidence=display_conf,
+                                bounding_box=box,
+                                frame_idx=frame_idx,
+                                frame_bgr=frame,
+                                fps=fps,
+                            )
+                        orig_res = det_map.get(id(box))
+                        reg = orig_res.ocr.region if orig_res and orig_res.ocr else None
+                        reg_c = orig_res.ocr.region_confidence if orig_res and orig_res.ocr else None
+                        smoothed_ocr = OcrResult(
+                            text=display_text,
+                            confidence=display_conf,
+                            region=reg,
+                            region_confidence=reg_c,
+                        )
+                        orig_det = orig_res.detection if orig_res else DetectionResult(bounding_box=box, confidence=1.0)
+                        smoothed_results.append(ALPRResult(detection=orig_det, ocr=smoothed_ocr))
+
+                    # 2. Draw annotations on frame
+                    annotated_frame = frame.copy()
+                    font_scale = min(1.25, max(0.4, width / 1000))
+                    text_thickness = 1 if font_scale < 0.75 else 2
+                    outline_thickness = text_thickness + max(3, round(font_scale * 3))
+
+                    for s_res in smoothed_results:
+                        if not s_res.ocr or not s_res.ocr.text:
+                            continue
+                        bbox = s_res.detection.bounding_box
+                        x1, y1, x2, y2 = bbox.x1, bbox.y1, bbox.x2, bbox.y2
+                        cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (36, 255, 12), 2)
+
+                        s_conf = (
+                            s_res.ocr.confidence
+                            if isinstance(s_res.ocr.confidence, float)
+                            else statistics.mean(s_res.ocr.confidence)
+                        )
+                        label = f"{s_res.ocr.text} {s_conf * 100:.0f}%"
+                        (tw, th), _ = cv2.getTextSize(
+                            label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, text_thickness
+                        )
+                        tx = min(max(x1, 5), max(5, width - tw - 5))
+                        ty = y1 - 10 if (y1 - 10 - th) > 0 else y2 + th + 10
+
+                        cv2.putText(
+                            annotated_frame,
+                            label,
+                            (tx, ty),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            font_scale,
+                            (0, 0, 0),
+                            outline_thickness,
+                            cv2.LINE_AA,
+                        )
+                        cv2.putText(
+                            annotated_frame,
+                            label,
+                            (tx, ty),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            font_scale,
+                            (255, 255, 255),
+                            text_thickness,
+                            cv2.LINE_AA,
+                        )
+
+                    writer.write(annotated_frame)
+                    total_plates += len(smoothed_results)
+                    processed_frames += 1
+                else:
+                    writer.write(frame)
+
+                if callable(progress_callback):
+                    progress_callback(frame_idx + 1, total_frames)
+
+                frame_idx += 1
+
+            elapsed = time.perf_counter() - t0
+            writer.release()
+
+            return VideoResult(
+                output_path=str(out),
+                total_frames=frame_idx,
+                processed_frames=processed_frames,
+                total_plates_detected=total_plates,
+                processing_time_seconds=round(elapsed, 3),
+                fps_processing=round(processed_frames / elapsed, 2) if elapsed > 0 else 0.0,
+                vehicle_records=logger.finalize() if logger is not None else None,
+            )
+        finally:
+            cap.release()
 

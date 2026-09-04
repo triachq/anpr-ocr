@@ -42,6 +42,8 @@ dependencies = [
 
 [project.scripts]
 anpr-ocr-showcase = "anpr_ocr.showcase:main"
+demo = "anpr_ocr.demo:main"
+video-demo = "anpr_ocr.video_demo:main"
 
 [project.optional-dependencies]
 onnx = ["onnxruntime>=1.19.2"]
