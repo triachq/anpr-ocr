@@ -6,6 +6,7 @@ metadata extraction (timestamps, state/region), and CSV / snapshot exports.
 from __future__ import annotations
 
 import csv
+import json
 from dataclasses import dataclass
 from datetime import datetime
 from difflib import SequenceMatcher
@@ -233,6 +234,48 @@ class PlateLogger:
                         ev.snapshot_path or "N/A",
                     ]
                 )
+
+        return target
+
+    def export_json(self, file_path: str | Path | None = None) -> Path | None:
+        """
+        Write finalized peak-score records to a JSON file.
+        """
+        target: Path | None
+        if file_path:
+            target = Path(file_path)
+        elif self.output_csv:
+            target = self.output_csv.with_suffix(".json")
+        else:
+            target = None
+
+        if not target:
+            return None
+
+        target.parent.mkdir(parents=True, exist_ok=True)
+        finalized = self.finalize()
+
+        # Save snapshots if directory is configured
+        if self.snapshots_dir:
+            self.save_snapshots()
+
+        records_payload = [
+            {
+                "vehicle_index": idx,
+                "plate_number": ev.plate_number,
+                "confidence": round(ev.confidence, 4),
+                "state_region": ev.state_region,
+                "video_timestamp": ev.video_time,
+                "peak_frame": ev.frame_index,
+                "detected_at": ev.detected_at,
+                "frames_observed": ev.frames_observed,
+                "snapshot_path": ev.snapshot_path,
+            }
+            for idx, ev in enumerate(finalized, 1)
+        ]
+
+        with open(target, mode="w", encoding="utf-8") as f:
+            json.dump(records_payload, f, indent=2, ensure_ascii=False)
 
         return target
 

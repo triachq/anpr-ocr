@@ -6,6 +6,7 @@ import argparse
 import csv
 import json
 import time
+from collections.abc import Sequence
 from pathlib import Path
 from typing import TypedDict, cast
 
@@ -273,8 +274,8 @@ def run_batch_demo(
     return 0
 
 
-def main() -> int:
-    args = _build_parser().parse_args()
+def main(argv: Sequence[str] | None = None) -> int:
+    args = _build_parser().parse_args(argv)
 
     # Expand directories or lists of files
     resolved_paths: list[Path] = []

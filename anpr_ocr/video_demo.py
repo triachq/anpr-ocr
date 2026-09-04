@@ -7,7 +7,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any, cast
 
 from fast_plate_ocr.inference.hub import OcrModel
@@ -189,26 +189,34 @@ def _make_progress_callback(total_frames: int) -> Callable[[int, int], None]:
 
 
 def _play_video_live(
-    video_path: Path,
+    video_path: Path | str | int,
     alpr: ALPR,
     frame_skip: int = 2,
     min_chars: int = 4,
     logger: PlateLogger | None = None,
 ) -> None:
-    """Play video in an interactive real-time GUI window with detection overlays."""
+    """Play video or live stream in an interactive real-time GUI window with detection overlays."""
     import cv2
     import statistics
 
-    cap = cv2.VideoCapture(str(video_path))
+    if isinstance(video_path, int) or (isinstance(video_path, str) and video_path.isdigit()):
+        cap = cv2.VideoCapture(int(video_path))
+        src_name = f"Camera {video_path}"
+    else:
+        cap = cv2.VideoCapture(str(video_path))
+        src_name = video_path.name if isinstance(video_path, Path) else str(video_path)
+
     if not cap.isOpened():
         print(f"{RED}Error: Failed to open video for playback: {video_path}{RESET}")
         return
 
-    win_name = f"ANPR Real-Time - {video_path.name} (Press Q or ESC to exit)"
+    win_name = f"ANPR Real-Time - {src_name} (Press Q or ESC to exit)"
     cv2.namedWindow(win_name, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(win_name, 1280, 720)
 
     src_fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+    if src_fps <= 0.0:
+        src_fps = 25.0
     frame_delay = max(1, int(1000 / src_fps))
 
     from anpr_ocr.utils import PlateTracker
@@ -218,7 +226,7 @@ def _play_video_live(
     frame_idx = 0
     t_start = time.perf_counter()
 
-    print(f"  {GREEN}[LIVE]{RESET} Playing {video_path.name} in GUI window...")
+    print(f"  {GREEN}[LIVE]{RESET} Playing {src_name} in GUI window...")
     print(f"  {DIM}Controls: Press 'Q' or 'ESC' to exit, [SPACE] to pause, [N] to step.{RESET}")
 
     while True:
@@ -376,33 +384,58 @@ def _play_video_live(
         print()
 
 
-def main() -> int:
-    args = _build_parser().parse_args()
+def main(argv: Sequence[str] | None = None) -> int:
+    args = _build_parser().parse_args(argv)
 
-    # -- Resolve video files -------------------------------------------------
-    target = DEFAULT_VIDEOS_DIR if args.video is None else args.video.resolve()
+    # -- Resolve video files or live stream source ---------------------------
+    video_input_raw = str(args.video) if args.video is not None else ""
+    is_stream_input = video_input_raw.isdigit() or video_input_raw.startswith(
+        ("rtsp://", "http://", "https://")
+    )
 
-    video_files: list[Path] = []
-    if target.is_dir():
+    video_files: list[Path | str] = []
+    if is_stream_input:
+        video_files = [video_input_raw]
+        target: Path | str = video_input_raw
+    elif args.video is None:
+        target = DEFAULT_VIDEOS_DIR
+        if target.is_dir():
+            video_files = sorted(
+                p
+                for p in target.iterdir()
+                if p.is_file() and p.suffix.lower() in SUPPORTED_VIDEO_EXTS
+            )
+            if not video_files:
+                print(f"{RED}Error: No supported video files found in: {target}{RESET}")
+                print(
+                    f"  Please place video files ({', '.join(sorted(SUPPORTED_VIDEO_EXTS))}) there,"
+                )
+                print("  or pass a video path: uv run video-demo path/to/video.mp4")
+                return 1
+    elif args.video is not None and args.video.is_dir():
+        dir_target = args.video.resolve()
+        target = dir_target
         video_files = sorted(
-            p for p in target.iterdir() if p.is_file() and p.suffix.lower() in SUPPORTED_VIDEO_EXTS
+            p
+            for p in dir_target.iterdir()
+            if p.is_file() and p.suffix.lower() in SUPPORTED_VIDEO_EXTS
         )
         if not video_files:
             print(f"{RED}Error: No supported video files found in: {target}{RESET}")
-            print(f"  Please place video files ({', '.join(sorted(SUPPORTED_VIDEO_EXTS))}) there,")
-            print("  or pass a video path: uv run video-demo path/to/video.mp4")
             return 1
-    elif target.is_file():
-        ext = target.suffix.lower()
+    elif args.video is not None and args.video.is_file():
+        file_target = args.video.resolve()
+        target = file_target
+        ext = file_target.suffix.lower()
         if ext not in SUPPORTED_VIDEO_EXTS:
             print(
                 f"{RED}Error: Unsupported video format '{ext}'. "
                 f"Supported: {', '.join(sorted(SUPPORTED_VIDEO_EXTS))}{RESET}"
             )
             return 1
-        video_files = [target]
+        video_files = [file_target]
     else:
-        print(f"{RED}Error: Video path not found: {target}{RESET}")
+        print(f"{RED}Error: Video path not found: {args.video}{RESET}")
         return 1
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -417,7 +450,8 @@ def main() -> int:
     print(f"  {DIM}Target:{RESET}      {target}")
     print(f"  {DIM}Videos found:{RESET}{len(video_files)} file(s)")
     for v in video_files:
-        print(f"    - {v.name}")
+        name_str = v.name if isinstance(v, Path) else v
+        print(f"    - {name_str}")
     print(f"  {DIM}Detector:{RESET}   {args.detector}")
     print(f"  {DIM}OCR:{RESET}        {args.ocr}")
     print(f"  {DIM}Frame skip:{RESET} {args.frame_skip}")
@@ -461,27 +495,36 @@ def main() -> int:
     total_pipeline_time = 0.0
 
     for idx, video_path in enumerate(video_files, 1):
+        if isinstance(video_path, Path):
+            v_stem = video_path.stem
+            v_suffix = video_path.suffix
+            v_source: int | str | Path = video_path
+            display_name = video_path.name
+        else:
+            v_stem = f"camera_{video_path}" if video_path.isdigit() else "stream"
+            v_suffix = ".mp4"
+            v_source = int(video_path) if video_path.isdigit() else video_path
+            display_name = f"Camera {video_path}" if str(video_path).isdigit() else str(video_path)
+
         # File Export / Output Paths
         if args.output and len(video_files) == 1 and args.output.suffix:
             output_path = args.output.resolve()
         elif args.output:
             args.output.mkdir(parents=True, exist_ok=True)
-            output_path = args.output.resolve() / f"{video_path.stem}_anpr{video_path.suffix}"
+            output_path = args.output.resolve() / f"{v_stem}_anpr{v_suffix}"
         else:
-            output_path = OUTPUT_DIR / f"{video_path.stem}_anpr{video_path.suffix}"
+            output_path = OUTPUT_DIR / f"{v_stem}_anpr{v_suffix}"
 
         # Resolve CSV log path and snapshots directory
         if not args.no_csv:
             if args.csv and len(video_files) == 1:
                 csv_path = args.csv.resolve()
             else:
-                csv_path = output_path.parent / f"{video_path.stem}_plates.csv"
+                csv_path = output_path.parent / f"{v_stem}_plates.csv"
         else:
             csv_path = None
 
-        snapshots_dir = (
-            (output_path.parent / f"{video_path.stem}_snapshots") if args.snapshots else None
-        )
+        snapshots_dir = (output_path.parent / f"{v_stem}_snapshots") if args.snapshots else None
 
         logger = PlateLogger(
             output_csv=csv_path,
@@ -493,7 +536,7 @@ def main() -> int:
         # Interactive Live Playback Mode
         if args.play:
             _play_video_live(
-                video_path=video_path,
+                video_path=v_source,
                 alpr=alpr,
                 frame_skip=args.frame_skip,
                 min_chars=args.min_chars,
@@ -501,14 +544,15 @@ def main() -> int:
             )
             continue
 
-        cap = cv2.VideoCapture(str(video_path))
+        # Headless Processing Mode
+        cap = cv2.VideoCapture(v_source if isinstance(v_source, int) else str(v_source))
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        src_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        src_fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         cap.release()
 
-        print(f"  {BOLD}[{idx}/{len(video_files)}] Processing: {video_path.name}{RESET}")
+        print(f"  {BOLD}[{idx}/{len(video_files)}] Processing: {display_name}{RESET}")
         print(
             f"      {DIM}Resolution:{RESET} {width}x{height} @ {src_fps:.1f} fps, {total_frames} frames"
         )
@@ -517,7 +561,7 @@ def main() -> int:
         progress = _make_progress_callback(total_frames)
         t_start = time.perf_counter()
         result = alpr.draw_predictions_video(
-            source=video_path,
+            source=v_source,
             output_path=output_path,
             frame_skip=args.frame_skip,
             codec=args.codec,

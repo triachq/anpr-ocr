@@ -11,7 +11,18 @@ from fast_plate_ocr.inference.hub import OcrModel
 from open_image_models.detection.core.hub import PlateDetectorModel
 
 from anpr_ocr.alpr import ALPR
-from anpr_ocr.utils import disambiguate_plate, enhance_plate_image, pad_bounding_box
+from anpr_ocr.cli import _create_main_parser
+from anpr_ocr.logger import PlateLogger
+from anpr_ocr.utils import (
+    PlateTracker,
+    disambiguate_plate,
+    enhance_plate_image,
+    heal_indian_plate,
+    is_two_row_plate,
+    pad_bounding_box,
+    split_two_row_crop,
+    vote_consensus_plate,
+)
 
 ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
 
@@ -136,3 +147,117 @@ def test_enhance_plate_image() -> None:
     enhanced = enhance_plate_image(dummy_img, enhance_contrast=True, min_width=100)
     assert enhanced.shape[1] == 100
     assert enhanced.shape[0] == 50  # 20 * (100 / 40)
+
+
+def test_heal_indian_plate() -> None:
+    # 10-character standard
+    assert heal_indian_plate("MH12DE1433") == "MH12DE1433"
+    assert heal_indian_plate("0L01AB1234") == "DL01AB1234"
+    assert heal_indian_plate("M812AB1234") == "MH12AB1234"
+    assert heal_indian_plate("KA-01-AB-1234") == "KA01AB1234"
+    # 9-character
+    assert heal_indian_plate("TN45Q3566") == "TN45Q3566"
+    # 11-character artifact healing
+    assert heal_indian_plate("KA01A1L6528") == "KA01AL6528"
+
+
+def test_bharat_series_plate() -> None:
+    # Format: YY BH NNNN AA
+    assert heal_indian_plate("21BH1234AA") == "21BH1234AA"
+    assert heal_indian_plate("228H1234AB") == "22BH1234AB"
+    assert heal_indian_plate("23BH5678A") == "23BH5678A"
+
+
+def test_vote_consensus_plate() -> None:
+    # Test glare / transient confusion correction
+    readings = [
+        ("MH12DE1433", 0.95),
+        ("MH120E1433", 0.70),
+        ("MH12DE1433", 0.92),
+    ]
+    voted, conf = vote_consensus_plate(readings)
+    assert voted == "MH12DE1433"
+    assert conf > 0.80
+
+
+def test_two_row_plate_detection_and_split() -> None:
+    assert is_two_row_plate(100, 70) is True
+    assert is_two_row_plate(300, 70) is False
+
+    dummy = np.zeros((60, 100, 3), dtype=np.uint8)
+    top, bot = split_two_row_crop(dummy)
+    assert top.shape[0] > 0 and top.shape[1] == 100
+    assert bot.shape[0] > 0 and bot.shape[1] == 100
+
+
+def test_plate_tracker() -> None:
+    class DummyBox:
+        def __init__(self, x1: int, y1: int, x2: int, y2: int) -> None:
+            self.x1, self.y1, self.x2, self.y2 = x1, y1, x2, y2
+
+    tracker = PlateTracker(max_unseen_frames=5, window_size=3)
+    b1 = DummyBox(10, 10, 100, 50)
+    dets1 = [(b1, "MH12DE1433", 0.90)]
+    res1 = tracker.update(dets1, frame_idx=0)
+    assert len(res1) == 1
+    assert res1[0][1] == "MH12DE1433"
+    tid = res1[0][3]
+
+    # Next frame, slight shift
+    b2 = DummyBox(12, 11, 102, 51)
+    dets2 = [(b2, "MH12DE1433", 0.95)]
+    res2 = tracker.update(dets2, frame_idx=1)
+    assert len(res2) == 1
+    assert res2[0][3] == tid
+
+
+def test_plate_logger_and_exports(tmp_path: Path) -> None:
+    class DummyBox:
+        def __init__(self, x1: int, y1: int, x2: int, y2: int) -> None:
+            self.x1, self.y1, self.x2, self.y2 = x1, y1, x2, y2
+
+    csv_file = tmp_path / "test_log.csv"
+    json_file = tmp_path / "test_log.json"
+    snaps_dir = tmp_path / "snapshots"
+
+    logger = PlateLogger(
+        output_csv=csv_file,
+        snapshots_dir=snaps_dir,
+        min_conf=0.40,
+        min_chars=4,
+    )
+    frame = np.zeros((200, 200, 3), dtype=np.uint8)
+    box = DummyBox(20, 20, 120, 60)
+
+    logger.observe("MH12DE1433", 0.80, box, frame_idx=0, frame_bgr=frame, fps=30.0)
+    logger.observe("MH12DE1433", 0.95, box, frame_idx=1, frame_bgr=frame, fps=30.0)
+
+    finalized = logger.finalize()
+    assert len(finalized) == 1
+    assert finalized[0].plate_number == "MH12DE1433"
+    assert finalized[0].confidence == 0.95
+
+    # Export CSV & JSON
+    out_csv = logger.export_csv()
+    assert out_csv is not None and out_csv.is_file()
+
+    out_json = logger.export_json(json_file)
+    assert out_json is not None and out_json.is_file()
+
+    table = logger.summary_table()
+    assert "MH12DE1433" in table
+
+
+def test_cli_parser() -> None:
+    parser = _create_main_parser()
+    args_img = parser.parse_args(["image", "test.jpg"])
+    assert args_img.command == "image"
+    assert args_img.images == ["test.jpg"]
+
+    args_vid = parser.parse_args(["video", "test.mp4", "--frame-skip", "2"])
+    assert args_vid.command == "video"
+    assert args_vid.frame_skip == 2
+
+    args_stream = parser.parse_args(["stream", "0"])
+    assert args_stream.command == "stream"
+    assert args_stream.source == "0"

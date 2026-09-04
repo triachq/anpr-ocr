@@ -139,17 +139,41 @@ uv run anpr-ocr-showcase path/to/car.jpg \
   --output artifacts/car-result.png
 ```
 
+### 🖥️ Unified CLI
+
+`anpr-ocr` ships a single unified command with four subcommands:
+
+```shell
+uv run anpr-ocr --help
+
+# Subcommands:
+#   image      – Run ALPR on still image file(s) or a folder
+#   video      – Process recorded video with tracking and logging
+#   stream     – Live webcam / RTSP camera feed
+#   finetune   – Fine-tuning helper and dataset generation
+```
+
 ### 🎬 Real-Time Video Inference & Live Playback
 
 `anpr-ocr` provides a high-throughput video inference pipeline with temporal tracking, multi-frame consensus voting, and automated vehicle logging:
 
 ```shell
-# Live GUI playback with DirectML GPU acceleration
-uv run video-demo --play --directml --frame-skip 2
+# Real-time inference from default webcam (camera 0)
+uv run anpr-ocr stream
 
-# Process a specific video and export an annotated MP4 + peak-score CSV log
-uv run video-demo data/videos/sample.mp4 --snapshots --enhance-contrast
+# Live GUI playback of a recorded video
+uv run anpr-ocr video data/videos/sample.mp4 --play --frame-skip 2
+
+# Process video headlessly and export annotated MP4 + peak-score CSV
+uv run anpr-ocr video data/videos/sample.mp4 --snapshots
+
+# RTSP / IP camera stream with DirectML GPU acceleration
+uv run anpr-ocr stream rtsp://user:pass@192.168.1.100:554/stream --directml
 ```
+
+> [!TIP]
+> On Linux (CPU only), skip the `--directml` flag — the default ONNX CPU backend
+> provides real-time throughput on most modern machines.
 
 #### Key Video Features:
 - **Temporal IoU Tracking**: Bounding-box IoU association prevents zombie track hopping between adjacent lanes.

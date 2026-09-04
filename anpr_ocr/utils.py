@@ -4,7 +4,7 @@ Image preprocessing and post-processing utility functions for ANPR.
 
 from __future__ import annotations
 
-from collections import deque
+from collections import defaultdict, deque
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -263,6 +263,20 @@ STATE_PREFIX_CORRECTIONS: dict[str, str] = {
     "P8": "PB",
     # West Bengal (WB)
     "W8": "WB",
+    # Jammu and Kashmir (JK)
+    "1K": "JK",
+    # Kerala (KL)
+    "K2": "KL",
+    # Goa (GA)
+    "0A": "GA",
+    # Uttarakhand (UK)
+    "0K": "UK",
+    # Chhattisgarh (CG)
+    "C6": "CG",
+    # Madhya Pradesh (MP)
+    "M0": "MP",
+    # Himachal Pradesh (HP)
+    "H0": "HP",
 }
 
 
@@ -276,10 +290,12 @@ def compute_box_iou(b1: Any, b2: Any) -> float:
     x_b = min(b1.x2, b2.x2)
     y_b = min(b1.y2, b2.y2)
     inter = max(0, x_b - x_a) * max(0, y_b - y_a)
-    area1 = max(1, (b1.x2 - b1.x1) * (b1.y2 - b1.y1))
-    area2 = max(1, (b2.x2 - b2.x1) * (b2.y2 - b2.y1))
+    area1 = max(0, (b1.x2 - b1.x1) * (b1.y2 - b1.y1))
+    area2 = max(0, (b2.x2 - b2.x1) * (b2.y2 - b2.y1))
     union = area1 + area2 - inter
-    return inter / max(union, 1)
+    if union <= 0:
+        return 0.0
+    return inter / float(union)
 
 
 def is_two_row_plate(width: int, height: int) -> bool:
@@ -319,6 +335,56 @@ class TrackedPlate:
     display_conf: float
     last_seen: int
     readings: deque[tuple[str, float]]
+
+
+def vote_consensus_plate(readings: Sequence[tuple[str, float]]) -> tuple[str, float]:
+    """
+    Perform weighted positional character voting across a temporal window of plate observations.
+    Eliminates transient character misreads, specular glare, and frame noise.
+    """
+    if not readings:
+        return "", 0.0
+    if len(readings) == 1:
+        return readings[0][0], readings[0][1]
+
+    # Filter out empty text observations
+    valid_readings = [(t.strip(), c) for t, c in readings if t and t.strip()]
+    if not valid_readings:
+        return "", 0.0
+
+    length_groups: dict[int, list[tuple[str, float]]] = defaultdict(list)
+    for text, conf in valid_readings:
+        length_groups[len(text)].append((text, conf))
+
+    # Pick candidate length with the highest combined confidence weight
+    best_length = max(
+        length_groups.keys(),
+        key=lambda length: (
+            sum(c for _, c in length_groups[length]),
+            len(length_groups[length]),
+            length,
+        ),
+    )
+    candidates = length_groups[best_length]
+
+    # Positional character voting across candidates of matching length
+    consensus_chars: list[str] = []
+    char_confs: list[float] = []
+
+    for pos in range(best_length):
+        weights: dict[str, float] = defaultdict(float)
+        for text, conf in candidates:
+            weights[text[pos]] += max(conf, 0.1)
+
+        best_char = max(weights.keys(), key=lambda c: weights[c])
+        consensus_chars.append(best_char)
+        matching = [c for text, c in candidates if text[pos] == best_char]
+        char_confs.append(sum(matching) / len(matching) if matching else 0.5)
+
+    voted_text = "".join(consensus_chars)
+    healed_text = heal_indian_plate(voted_text)
+    avg_conf = sum(char_confs) / len(char_confs) if char_confs else 0.0
+    return healed_text, avg_conf
 
 
 class PlateTracker:
@@ -385,8 +451,8 @@ class PlateTracker:
                 track.readings.append((text, conf))
                 assigned_tracks.add(best_match_id)
 
-                # Rolling window consensus: prefer longer valid text or highest confidence in window
-                best_t, best_c = max(track.readings, key=lambda x: (len(x[0]), x[1]))
+                # Weighted positional consensus voting across the rolling window
+                best_t, best_c = vote_consensus_plate(track.readings)
                 track.display_text = best_t
                 track.display_conf = best_c
                 updated_results.append((box, track.display_text, track.display_conf, best_match_id))
@@ -412,7 +478,7 @@ class PlateTracker:
 def heal_indian_plate(text: str) -> str:
     """
     Auto-heal common character recognition confusions for Indian license plates
-    using known state prefixes and RTO format conventions.
+    using known state prefixes, Bharat Series, and RTO format conventions.
 
     Parameters:
         text: Raw recognized alphanumeric plate text.
@@ -420,7 +486,8 @@ def heal_indian_plate(text: str) -> str:
     Returns:
         str: Corrected plate string.
     """
-    clean = text.replace(" ", "").upper()
+    # Clean string: strip spaces, dashes, dots, and non-alphanumeric noise
+    clean = "".join(c for c in text.upper() if c.isalnum())
 
     # Handle 11-character plates caused by vertical bleed-through artifact between row 1 and row 2
     # e.g. KA01A1L6528 -> rogue digit '1' between series letters 'A' and 'L' -> KA01AL6528
@@ -437,6 +504,20 @@ def heal_indian_plate(text: str) -> str:
                 if c.isdigit():
                     clean = clean[: 4 + i] + clean[4 + i + 1 :]
                     break
+
+    # Bharat Series (BH) plates: YY BH NNNN AA (e.g. 21BH1234AA, 22BH5678A)
+    if len(clean) in (9, 10) and (
+        clean[2:4] == "BH" or (clean[2] in ("8", "B") and clean[3] == "H")
+    ):
+        bh_chars = list(clean)
+        bh_chars[0] = LETTER_TO_DIGIT.get(bh_chars[0], bh_chars[0])
+        bh_chars[1] = LETTER_TO_DIGIT.get(bh_chars[1], bh_chars[1])
+        bh_chars[2], bh_chars[3] = "B", "H"
+        for i in range(4, 8):
+            bh_chars[i] = LETTER_TO_DIGIT.get(bh_chars[i], bh_chars[i])
+        for i in range(8, len(bh_chars)):
+            bh_chars[i] = DIGIT_TO_LETTER.get(bh_chars[i], bh_chars[i])
+        return "".join(bh_chars)
 
     if len(clean) not in (7, 8, 9, 10):
         return clean

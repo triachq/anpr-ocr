@@ -83,8 +83,18 @@ class DefaultOCR(BaseOCR):
         self, crop: np.ndarray
     ) -> tuple[str, list[float], str | None, float | None]:
         """Run OCR inference on a single cropped image and return text, probs, and region."""
-        if crop is None or crop.size == 0:
+        if crop is None or crop.size == 0 or crop.shape[0] < 4 or crop.shape[1] < 4:
             return "", [], None, None
+
+        # Upscale low-resolution crops to ensure character strokes are distinct for the OCR network
+        h, w = crop.shape[:2]
+        if h < 24 or w < 80:
+            scale = max(24.0 / max(1, h), 80.0 / max(1, w))
+            new_w = max(80, round(w * scale))
+            new_h = max(24, round(h * scale))
+            crop = cv2.resize(crop, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
+            blurred = cv2.GaussianBlur(crop, (0, 0), sigmaX=1.0)
+            crop = cv2.addWeighted(crop, 1.25, blurred, -0.25, 0)
 
         if self.ocr_model.config.image_color_mode == "grayscale":
             crop_conv = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)

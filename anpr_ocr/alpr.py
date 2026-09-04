@@ -91,6 +91,83 @@ class VideoResult:
     vehicle_records: list[VehicleRecord] | None = None
 
 
+def _draw_plate_annotations(
+    frame: np.ndarray,
+    results: Sequence[ALPRResult],
+    show_region: bool = False,
+) -> np.ndarray:
+    """
+    Render bounding boxes and OCR text overlays on an image frame.
+    """
+    img = frame.copy()
+    height, width = img.shape[:2]
+    font_scale = min(1.25, max(0.4, width / 1000))
+    text_thickness = 1 if font_scale < 0.75 else 2
+    outline_thickness = text_thickness + max(3, round(font_scale * 3))
+
+    for result in results:
+        ocr_result = result.ocr
+        if not ocr_result or not ocr_result.text:
+            continue
+        bbox = result.detection.bounding_box
+        x1, y1, x2, y2 = bbox.x1, bbox.y1, bbox.x2, bbox.y2
+
+        cv2.rectangle(img, (x1, y1), (x2, y2), (36, 255, 12), 2)
+
+        conf: float = (
+            statistics.mean(ocr_result.confidence)
+            if isinstance(ocr_result.confidence, list)
+            else (ocr_result.confidence or 0.0)
+        )
+        display_lines = [f"{ocr_result.text} {conf * 100:.0f}%"]
+        if show_region and ocr_result.region:
+            reg_text = ocr_result.region
+            if ocr_result.region_confidence is not None:
+                reg_text = f"{reg_text} {ocr_result.region_confidence * 100:.0f}%"
+            display_lines.insert(0, reg_text)
+
+        _, text_height = cv2.getTextSize(
+            display_lines[0], cv2.FONT_HERSHEY_SIMPLEX, font_scale, text_thickness
+        )[0]
+        line_gap = max(14, round(text_height * 0.6))
+        line_height = text_height + line_gap
+        text_y = y1 - 10 - ((len(display_lines) - 1) * line_height)
+        if text_y - text_height < 0:
+            text_y = y2 + text_height + 10
+
+        for idx, line in enumerate(display_lines):
+            text_width, current_text_height = cv2.getTextSize(
+                line, cv2.FONT_HERSHEY_SIMPLEX, font_scale, text_thickness
+            )[0]
+            text_x = min(max(x1, 5), max(5, width - text_width - 5))
+            current_y = min(
+                max(text_y + (idx * line_height), current_text_height + 5),
+                height - 5,
+            )
+            cv2.putText(
+                img=img,
+                text=line,
+                org=(text_x, current_y),
+                fontFace=cv2.FONT_HERSHEY_SIMPLEX,
+                fontScale=font_scale,
+                color=(0, 0, 0),
+                thickness=outline_thickness,
+                lineType=cv2.LINE_AA,
+            )
+            cv2.putText(
+                img=img,
+                text=line,
+                org=(text_x, current_y),
+                fontFace=cv2.FONT_HERSHEY_SIMPLEX,
+                fontScale=font_scale,
+                color=(255, 255, 255),
+                thickness=text_thickness,
+                lineType=cv2.LINE_AA,
+            )
+
+    return img
+
+
 class ALPR:
     """
     Automatic License Plate Recognition (ALPR) system class.
@@ -174,23 +251,32 @@ class ALPR:
             syntax_pattern=syntax_pattern,
         )
 
-    def predict(self, frame: np.ndarray | str) -> list[ALPRResult]:
+    def predict(self, frame: np.ndarray | str | os.PathLike) -> list[ALPRResult]:
         """
         Run plate detection and OCR on an image.
 
         Parameters:
-            frame: Unprocessed frame (Colors in order: BGR) or image path.
+            frame: Unprocessed frame (Colors in order: BGR), image path, or PathLike.
 
         Returns:
             A list of ALPRResult objects, one for each detected plate.
         """
-        if isinstance(frame, str):
-            img_path = frame
+        if isinstance(frame, (str, os.PathLike)):
+            img_path = str(frame)
             img = cv2.imread(img_path)
             if img is None:
                 raise ValueError(f"Failed to load image from path: {img_path}")
-        else:
+        elif isinstance(frame, np.ndarray):
+            if (
+                frame.size == 0
+                or len(frame.shape) < 2
+                or frame.shape[0] == 0
+                or frame.shape[1] == 0
+            ):
+                return []
             img = frame
+        else:
+            raise TypeError(f"Expected np.ndarray or path-like object, got {type(frame).__name__}")
 
         plate_detections = self.detector.predict(img)
         alpr_results: list[ALPRResult] = []
@@ -210,6 +296,10 @@ class ALPR:
             else:
                 x1, y1 = max(bbox.x1, 0), max(bbox.y1, 0)
                 x2, y2 = min(bbox.x2, img.shape[1]), min(bbox.y2, img.shape[0])
+
+            if x2 <= x1 or y2 <= y1:
+                alpr_results.append(ALPRResult(detection=detection, ocr=None))
+                continue
 
             cropped_plate = img[y1:y2, x1:x2]
             ocr_result = self.ocr.predict(cropped_plate)
@@ -231,7 +321,7 @@ class ALPR:
 
     def draw_predictions(
         self,
-        frame: np.ndarray | str,
+        frame: np.ndarray | str | os.PathLike,
         show_region: bool = False,
         min_chars: int = 3,
         min_conf: float = 0.35,
@@ -240,7 +330,7 @@ class ALPR:
         Draw detections and OCR results on an image.
 
         Parameters:
-            frame: The original frame or image path.
+            frame: The original frame, image path, or PathLike.
             show_region: Whether to display country/region prediction above the plate.
                 Defaults to False (disabled).
             min_chars: Minimum recognized character count to display annotation.
@@ -249,26 +339,22 @@ class ALPR:
         Returns:
             A DrawPredictionsResult with the annotated image and the ALPR results.
         """
-        # If frame is a string, assume it's an image path and load it
-        if isinstance(frame, str):
-            img_path = frame
+        if isinstance(frame, (str, os.PathLike)):
+            img_path = str(frame)
             img = cv2.imread(img_path)
             if img is None:
                 raise ValueError(f"Failed to load image from path: {img_path}")
+        elif isinstance(frame, np.ndarray):
+            img = frame.copy()
         else:
-            img = frame
+            raise TypeError(f"Expected np.ndarray or path-like object, got {type(frame).__name__}")
 
-        # Get ALPR results using the ndarray
+        # Get ALPR results
         alpr_results = self.predict(img)
         drawn_results = []
 
         for result in alpr_results:
-            detection = result.detection
             ocr_result = result.ocr
-            bbox = detection.bounding_box
-            x1, y1, x2, y2 = bbox.x1, bbox.y1, bbox.x2, bbox.y2
-
-            # Filter out spurious, empty, or sub-threshold plates
             if ocr_result is None or not ocr_result.text:
                 continue
             clean_text = ocr_result.text.strip()
@@ -285,62 +371,8 @@ class ALPR:
 
             drawn_results.append(result)
 
-            # Draw the bounding box
-            cv2.rectangle(img, (x1, y1), (x2, y2), (36, 255, 12), 2)
-
-            font_scale = min(1.25, max(0.4, img.shape[1] / 1000))
-            text_thickness = 1 if font_scale < 0.75 else 2
-            outline_thickness = text_thickness + max(3, round(font_scale * 3))
-            display_lines = [f"{clean_text} {confidence * 100:.0f}%"]
-
-            if show_region and ocr_result.region:
-                region_text = ocr_result.region
-                if ocr_result.region_confidence is not None:
-                    region_text = f"{region_text} {ocr_result.region_confidence * 100:.0f}%"
-                display_lines.insert(0, region_text)
-
-            _, text_height = cv2.getTextSize(
-                display_lines[0], cv2.FONT_HERSHEY_SIMPLEX, font_scale, text_thickness
-            )[0]
-            line_gap = max(14, round(text_height * 0.6))
-            line_height = text_height + line_gap
-            text_y = y1 - 10 - ((len(display_lines) - 1) * line_height)
-            if text_y - text_height < 0:
-                text_y = y2 + text_height + 10
-
-            for idx, line in enumerate(display_lines):
-                text_width, current_text_height = cv2.getTextSize(
-                    line, cv2.FONT_HERSHEY_SIMPLEX, font_scale, text_thickness
-                )[0]
-                text_x = min(max(x1, 5), max(5, img.shape[1] - text_width - 5))
-                current_y = min(
-                    max(text_y + (idx * line_height), current_text_height + 5),
-                    img.shape[0] - 5,
-                )
-                # Draw black background for better readability
-                cv2.putText(
-                    img=img,
-                    text=line,
-                    org=(text_x, current_y),
-                    fontFace=cv2.FONT_HERSHEY_SIMPLEX,
-                    fontScale=font_scale,
-                    color=(0, 0, 0),
-                    thickness=outline_thickness,
-                    lineType=cv2.LINE_AA,
-                )
-                # Draw white text
-                cv2.putText(
-                    img=img,
-                    text=line,
-                    org=(text_x, current_y),
-                    fontFace=cv2.FONT_HERSHEY_SIMPLEX,
-                    fontScale=font_scale,
-                    color=(255, 255, 255),
-                    thickness=text_thickness,
-                    lineType=cv2.LINE_AA,
-                )
-
-        return DrawPredictionsResult(image=img, results=drawn_results)
+        annotated = _draw_plate_annotations(img, drawn_results, show_region=show_region)
+        return DrawPredictionsResult(image=annotated, results=drawn_results)
 
     def predict_batch(
         self, frames: Sequence[np.ndarray | str | os.PathLike]
@@ -373,33 +405,46 @@ class ALPR:
     # -- Video methods -------------------------------------------------------
 
     @staticmethod
-    def _open_video(source: str | os.PathLike) -> cv2.VideoCapture:
-        """Open a video file and validate it can be read."""
-        path = str(source)
-        ext = Path(path).suffix.lower()
+    def _open_video(source: int | str | os.PathLike) -> cv2.VideoCapture:
+        """Open a video file, webcam device index, or network stream URL and validate it."""
+        if isinstance(source, int) or (isinstance(source, str) and source.isdigit()):
+            cam_idx = int(source)
+            cap = cv2.VideoCapture(cam_idx)
+            if not cap.isOpened():
+                raise ValueError(f"Failed to open camera device index: {cam_idx}")
+            return cap
+
+        path_str = str(source)
+        if path_str.startswith(("rtsp://", "http://", "https://")):
+            cap = cv2.VideoCapture(path_str)
+            if not cap.isOpened():
+                raise ValueError(f"Failed to open video stream: {path_str}")
+            return cap
+
+        ext = Path(path_str).suffix.lower()
         if ext not in SUPPORTED_VIDEO_EXTS:
             raise ValueError(
                 f"Unsupported video format '{ext}'. "
                 f"Supported: {', '.join(sorted(SUPPORTED_VIDEO_EXTS))}"
             )
-        cap = cv2.VideoCapture(path)
+        cap = cv2.VideoCapture(path_str)
         if not cap.isOpened():
-            raise ValueError(f"Failed to open video: {path}")
+            raise ValueError(f"Failed to open video: {path_str}")
         return cap
 
     def predict_video(
         self,
-        source: str | os.PathLike,
+        source: int | str | os.PathLike,
         frame_skip: int = 1,
     ) -> Generator[tuple[int, list[ALPRResult]], None, None]:
         """
-        Run plate detection and OCR on every *frame_skip*-th frame of a video.
+        Run plate detection and OCR on every *frame_skip*-th frame of a video or live stream.
 
         This is a **generator** — it yields results lazily so arbitrarily long
         videos can be processed without holding all frames in memory.
 
         Parameters:
-            source: Path to a video file.
+            source: Path to a video file, camera device index (e.g. 0), or stream URL.
             frame_skip: Process every Nth frame (1 = every frame, 2 = every
                 other frame, etc.). Must be >= 1.
 
@@ -427,11 +472,11 @@ class ALPR:
 
     def draw_predictions_video(
         self,
-        source: str | os.PathLike,
+        source: int | str | os.PathLike,
         output_path: str | os.PathLike | None = None,
         frame_skip: int = 1,
         codec: str | None = None,
-        show_region: bool = False,  # noqa: ARG002
+        show_region: bool = False,
         min_chars: int = 3,
         min_conf: float = 0.35,
         progress_callback: Callable[[int, int], None] | None = None,
@@ -441,25 +486,19 @@ class ALPR:
         Read a video, draw ALPR annotations on each processed frame, and write
         the result to an output video file.
 
-        Frames that are *not* processed (due to ``frame_skip``) are written
-        to the output unchanged so that the video plays back at the original
-        frame rate and duration.
+        Frames that are *not* processed (due to ``frame_skip``) carry forward
+        active track annotations so playback remains flicker-free at original FPS.
 
         Parameters:
-            source: Path to the input video file.
-            output_path: Where to write the annotated video.  If ``None``, the
-                output is saved next to the source with an ``_anpr`` suffix.
+            source: Path to input video file or camera/stream.
+            output_path: Where to write annotated video. If ``None``, saved with ``_anpr`` suffix.
             frame_skip: Run ALPR on every Nth frame (1 = every frame).
-                Non-processed frames are still written unmodified.
-            codec: FourCC codec string (e.g. ``'mp4v'``).  If ``None``, a
-                sensible default is chosen based on the output file extension.
+            codec: FourCC codec string (e.g. ``'mp4v'``). Auto-detected if ``None``.
             show_region: Whether to display country/region prediction above the plate.
-                Defaults to False (disabled).
             min_chars: Minimum recognized character count to display annotation.
             min_conf: Minimum average OCR confidence to display annotation.
-            progress_callback: An optional callable that receives
-                ``(current_frame: int, total_frames: int)`` after each frame
-                is written.  Useful for progress bars.
+            progress_callback: Callback receiving ``(current_frame: int, total_frames: int)``.
+            logger: Optional PlateLogger instance for deduplication and logging.
 
         Returns:
             A :class:`VideoResult` with processing statistics.
@@ -467,18 +506,30 @@ class ALPR:
         if frame_skip < 1:
             raise ValueError(f"frame_skip must be >= 1, got {frame_skip}")
 
-        source_path = Path(source)
+        source_str = str(source)
+        is_stream = (
+            isinstance(source, int)
+            or source_str.isdigit()
+            or source_str.startswith(("rtsp://", "http://", "https://"))
+        )
         cap = self._open_video(source)
 
         try:
-            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            raw_total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            total_frames = max(0, raw_total) if not is_stream else 0
             fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+            if fps <= 0.0:
+                fps = 30.0
             width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
             # Resolve output path
             if output_path is None:
-                out = source_path.with_stem(source_path.stem + "_anpr")
+                if is_stream:
+                    out = Path(f"stream_recording_{int(time.time())}_anpr.mp4")
+                else:
+                    src_p = Path(source_str)
+                    out = src_p.with_stem(src_p.stem + "_anpr")
             else:
                 out = Path(output_path)
             out.parent.mkdir(parents=True, exist_ok=True)
@@ -499,6 +550,7 @@ class ALPR:
 
             # Multi-frame temporal voting tracker with IoU matching and rolling consensus
             tracker = PlateTracker(max_unseen_frames=frame_skip * 5, window_size=5)
+            last_smoothed_results: list[ALPRResult] = []
 
             frame_idx = 0
             while True:
@@ -561,59 +613,23 @@ class ALPR:
                         )
                         smoothed_results.append(ALPRResult(detection=orig_det, ocr=smoothed_ocr))
 
-                    # 2. Draw annotations on frame
-                    annotated_frame = frame.copy()
-                    font_scale = min(1.25, max(0.4, width / 1000))
-                    text_thickness = 1 if font_scale < 0.75 else 2
-                    outline_thickness = text_thickness + max(3, round(font_scale * 3))
-
-                    for s_res in smoothed_results:
-                        if not s_res.ocr or not s_res.ocr.text:
-                            continue
-                        bbox = s_res.detection.bounding_box
-                        x1, y1, x2, y2 = bbox.x1, bbox.y1, bbox.x2, bbox.y2
-                        cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (36, 255, 12), 2)
-
-                        s_conf = (
-                            s_res.ocr.confidence
-                            if isinstance(s_res.ocr.confidence, float)
-                            else statistics.mean(s_res.ocr.confidence)
-                        )
-                        label = f"{s_res.ocr.text} {s_conf * 100:.0f}%"
-                        (tw, th), _ = cv2.getTextSize(
-                            label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, text_thickness
-                        )
-                        tx = min(max(x1, 5), max(5, width - tw - 5))
-                        ty = y1 - 10 if (y1 - 10 - th) > 0 else y2 + th + 10
-
-                        cv2.putText(
-                            annotated_frame,
-                            label,
-                            (tx, ty),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            font_scale,
-                            (0, 0, 0),
-                            outline_thickness,
-                            cv2.LINE_AA,
-                        )
-                        cv2.putText(
-                            annotated_frame,
-                            label,
-                            (tx, ty),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            font_scale,
-                            (255, 255, 255),
-                            text_thickness,
-                            cv2.LINE_AA,
-                        )
-
+                    last_smoothed_results = smoothed_results
+                    annotated_frame = _draw_plate_annotations(
+                        frame, smoothed_results, show_region=show_region
+                    )
                     writer.write(annotated_frame)
                     total_plates += len(smoothed_results)
                     processed_frames += 1
+                elif last_smoothed_results:
+                    # Carry forward active track overlays across skipped frames to avoid flicker
+                    inter_annotated = _draw_plate_annotations(
+                        frame, last_smoothed_results, show_region=show_region
+                    )
+                    writer.write(inter_annotated)
                 else:
                     writer.write(frame)
 
-                if progress_callback is not None:
+                if progress_callback is not None and total_frames > 0:
                     progress_callback(frame_idx + 1, total_frames)
 
                 frame_idx += 1
