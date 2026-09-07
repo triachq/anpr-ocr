@@ -20,6 +20,7 @@ from anpr_ocr.utils import (
     heal_indian_plate,
     is_two_row_plate,
     split_two_row_crop,
+    is_uae_region,
 )
 
 # pylint: disable=too-many-arguments
@@ -137,10 +138,11 @@ class DefaultOCR(BaseOCR):
 
         # 1. Baseline 1-row OCR prediction
         t1, c1, r1, rp1 = self._run_single_crop(cropped_plate)
+        uae_plate = is_uae_region(r1)
         if self.syntax_pattern and t1:
-            t1 = disambiguate_plate(t1, self.syntax_pattern)
+            t1 = disambiguate_plate(t1, self.syntax_pattern, apply_indian_healing=not uae_plate)
 
-        h1 = heal_indian_plate(t1)
+        h1 = t1 if uae_plate else heal_indian_plate(t1)
         mean_c1 = (sum(c1) / len(c1)) if c1 else 0.0
 
         # 2. Check for square / 2-row plate (e.g. auto-rickshaws, motorbikes)
@@ -154,9 +156,12 @@ class DefaultOCR(BaseOCR):
             if len(tt) >= 2 and len(tb) >= 2:
                 t2 = tt + tb
                 c2 = ct + cb
+                uae_two_row_plate = is_uae_region(rt)
                 if self.syntax_pattern:
-                    t2 = disambiguate_plate(t2, self.syntax_pattern)
-                h2 = heal_indian_plate(t2)
+                    t2 = disambiguate_plate(
+                        t2, self.syntax_pattern, apply_indian_healing=not uae_two_row_plate
+                    )
+                h2 = t2 if uae_two_row_plate else heal_indian_plate(t2)
                 mean_c2 = (sum(c2) / len(c2)) if c2 else 0.0
 
                 # Prefer 2-row if:

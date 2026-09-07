@@ -16,7 +16,7 @@ from open_image_models.detection.core.hub import PlateDetectorModel
 from anpr_ocr import ALPR, PlateLogger
 from anpr_ocr.alpr import SUPPORTED_VIDEO_EXTS
 from anpr_ocr.logger import estimate_vehicle_color
-from anpr_ocr.utils import get_state_name
+from anpr_ocr.utils import get_plate_region
 
 # pylint: disable=too-many-branches, too-many-statements, import-outside-toplevel
 # ruff: noqa: PLR0912, PLR0915, PLC0415, E501, ARG001
@@ -37,6 +37,11 @@ PLATE_PATTERNS = [
     "LLDDLDDDD",  # 9-char:  TN45Q3566
     "LLDDDDDD",  # 8-char:  LA020749
     "LLDDDDD",  # 7-char:  IN03044
+    "LDDDDDD",  # 7-char:  UAE series + number
+    "LDDDDD",  # 6-char:  UAE series + number
+    "LLDDDD",  # 6-char:  UAE series + number
+    "DDDDDD",  # 6-char:  UAE numeric plate
+    "DDDDD",  # 5-char:  UAE numeric plate
     "DLLDDDD",  # 7-char:  5AU5341
     "LLDDLLL",  # 7-char:  LB02APF
     "LLLDDD",  # 6-char:  IZX842
@@ -243,6 +248,7 @@ def _play_video_live(
         if frame_idx % frame_skip == 0:
             res = alpr.predict(frame)
             frame_dets = []
+            model_regions: dict[str, str | None] = {}
             for r in res:
                 if not r.ocr or not r.ocr.text or len(r.ocr.text.strip()) < min_chars:
                     continue
@@ -253,7 +259,9 @@ def _play_video_live(
                 )
                 if conf < 0.35:
                     continue
-                frame_dets.append((r.detection.bounding_box, r.ocr.text.strip(), conf))
+                text = r.ocr.text.strip()
+                frame_dets.append((r.detection.bounding_box, text, conf))
+                model_regions[text] = r.ocr.region
 
             tracked = tracker.update(frame_dets, frame_idx)
             active_plates = [
@@ -261,14 +269,14 @@ def _play_video_live(
                     box,
                     txt,
                     conf,
-                    get_state_name(txt) or "Other / International",
+                    get_plate_region(txt, model_regions.get(txt)),
                     estimate_vehicle_color(frame, box),
                 )
                 for box, txt, conf, _ in tracked
             ]
 
             if logger is not None:
-                for box, txt, conf, _, _ in active_plates:
+                for box, txt, conf, state, _ in active_plates:
                     logger.observe(
                         plate_text=txt,
                         confidence=conf,
@@ -276,6 +284,7 @@ def _play_video_live(
                         frame_idx=frame_idx,
                         frame_bgr=frame,
                         fps=src_fps,
+                        model_region=state,
                     )
 
         # Render annotations
