@@ -56,13 +56,15 @@ def estimate_vehicle_color(frame_bgr: np.ndarray, bounding_box: Any) -> str:
     if len(valid) < 20:
         return "Unknown"
 
-    hue = valid[:, 0]
-    sat = valid[:, 1]
-    val = valid[:, 2]
-    if np.median(val) < 55:
+    hue = valid[:, 0].astype(np.float64)
+    sat = valid[:, 1].astype(np.float64)
+    val = valid[:, 2].astype(np.float64)
+    median_value = float(np.median(val))
+    median_saturation = float(np.median(sat))
+    if median_value < 55:
         return "Black"
-    if np.median(sat) < 35:
-        brightness = np.median(val)
+    if median_saturation < 35:
+        brightness = median_value
         return "White" if brightness > 185 else "Silver/Gray"
 
     dominant_hue = float(np.median(hue))
