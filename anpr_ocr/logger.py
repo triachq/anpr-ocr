@@ -33,6 +33,55 @@ def is_similar_plate(p1: str, p2: str, threshold: float = 0.75) -> bool:
     return SequenceMatcher(None, p1, p2).ratio() >= threshold
 
 
+def estimate_vehicle_color(frame_bgr: np.ndarray, bounding_box: Any) -> str:
+    """Estimate the dominant visible vehicle color around a plate detection."""
+    height, width = frame_bgr.shape[:2]
+    box_width = max(1, bounding_box.x2 - bounding_box.x1)
+    box_height = max(1, bounding_box.y2 - bounding_box.y1)
+    x1 = max(0, bounding_box.x1 - box_width)
+    y1 = max(0, bounding_box.y1 - box_height * 2)
+    x2 = min(width, bounding_box.x2 + box_width)
+    y2 = min(height, bounding_box.y2 + box_height * 2)
+    region = frame_bgr[y1:y2, x1:x2]
+    if region.size == 0:
+        return "Unknown"
+
+    hsv = cv2.cvtColor(region, cv2.COLOR_BGR2HSV)
+    pixels = hsv.reshape(-1, 3)
+    saturation = pixels[:, 1]
+    value = pixels[:, 2]
+    valid = pixels[(value > 25) & (saturation > 20)]
+    if len(valid) < 20:
+        valid = pixels[value > 25]
+    if len(valid) < 20:
+        return "Unknown"
+
+    hue = valid[:, 0].astype(np.float64)
+    sat = valid[:, 1].astype(np.float64)
+    val = valid[:, 2].astype(np.float64)
+    median_value = float(np.median(val))
+    median_saturation = float(np.median(sat))
+    if median_value < 55:
+        color = "Black"
+    elif median_saturation < 35:
+        color = "White" if median_value > 185 else "Silver/Gray"
+    else:
+        dominant_hue = float(np.median(hue))
+        if dominant_hue < 10 or dominant_hue >= 170:
+            color = "Red"
+        elif dominant_hue < 25:
+            color = "Orange/Brown"
+        elif dominant_hue < 35:
+            color = "Yellow/Gold"
+        elif dominant_hue < 85:
+            color = "Green"
+        elif dominant_hue < 135:
+            color = "Blue"
+        else:
+            color = "Purple"
+    return color
+
+
 @dataclass
 class VehicleRecord:
     """A finalized log record for a unique vehicle at its peak recognition score."""

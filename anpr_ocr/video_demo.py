@@ -15,6 +15,8 @@ from open_image_models.detection.core.hub import PlateDetectorModel
 
 from anpr_ocr import ALPR, PlateLogger
 from anpr_ocr.alpr import SUPPORTED_VIDEO_EXTS
+from anpr_ocr.logger import estimate_vehicle_color
+from anpr_ocr.utils import get_state_name
 
 # pylint: disable=too-many-branches, too-many-statements, import-outside-toplevel
 # ruff: noqa: PLR0912, PLR0915, PLC0415, E501, ARG001
@@ -222,7 +224,7 @@ def _play_video_live(
     from anpr_ocr.utils import PlateTracker
 
     tracker = PlateTracker(max_unseen_frames=frame_skip * 5, window_size=5)
-    active_plates: list[tuple[Any, str, float]] = []
+    active_plates: list[tuple[Any, str, float, str, str]] = []
     frame_idx = 0
     t_start = time.perf_counter()
 
@@ -254,10 +256,19 @@ def _play_video_live(
                 frame_dets.append((r.detection.bounding_box, r.ocr.text.strip(), conf))
 
             tracked = tracker.update(frame_dets, frame_idx)
-            active_plates = [(box, txt, conf) for box, txt, conf, _ in tracked]
+            active_plates = [
+                (
+                    box,
+                    txt,
+                    conf,
+                    get_state_name(txt) or "Other / International",
+                    estimate_vehicle_color(frame, box),
+                )
+                for box, txt, conf, _ in tracked
+            ]
 
             if logger is not None:
-                for box, txt, conf in active_plates:
+                for box, txt, conf, _, _ in active_plates:
                     logger.observe(
                         plate_text=txt,
                         confidence=conf,
@@ -269,9 +280,9 @@ def _play_video_live(
 
         # Render annotations
         display = frame.copy()
-        for b, txt, c in active_plates:
+        for b, txt, c, state, color in active_plates:
             cv2.rectangle(display, (b.x1, b.y1), (b.x2, b.y2), (36, 255, 12), 2)
-            lbl = f"{txt} {c * 100:.0f}%"
+            lbl = f"{txt} {c * 100:.0f}% | {color} | {state}"
             cv2.putText(
                 display,
                 lbl,
