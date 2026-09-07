@@ -22,6 +22,7 @@ from anpr_ocr.utils import (
     pad_bounding_box,
     split_two_row_crop,
     vote_consensus_plate,
+    get_state_name,
 )
 
 ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
@@ -209,6 +210,26 @@ def test_plate_tracker() -> None:
     res2 = tracker.update(dets2, frame_idx=1)
     assert len(res2) == 1
     assert res2[0][3] == tid
+
+
+def test_indian_state_code_mapping() -> None:
+    assert get_state_name("MH12DE1433") == "Maharashtra"
+    assert get_state_name("DL01AB1234") == "Delhi"
+    assert get_state_name("OD02AB1234") == "Odisha"
+    assert get_state_name("DD01AB1234") == "Dadra and Nagar Haveli and Daman and Diu"
+    assert get_state_name("XX01AB1234") == ""
+
+
+def test_vehicle_color_estimation() -> None:
+    class DummyBox:
+        def __init__(self, x1: int, y1: int, x2: int, y2: int) -> None:
+            self.x1, self.y1, self.x2, self.y2 = x1, y1, x2, y2
+
+    box = DummyBox(40, 40, 80, 60)
+    blue_frame = np.full((120, 120, 3), (255, 0, 0), dtype=np.uint8)
+    gray_frame = np.full((120, 120, 3), (150, 150, 150), dtype=np.uint8)
+    assert estimate_vehicle_color(blue_frame, box) == "Blue"
+    assert estimate_vehicle_color(gray_frame, box) == "Silver/Gray"
 
 
 def test_plate_logger_and_exports(tmp_path: Path) -> None:

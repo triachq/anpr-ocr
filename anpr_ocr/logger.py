@@ -62,24 +62,23 @@ def estimate_vehicle_color(frame_bgr: np.ndarray, bounding_box: Any) -> str:
     median_value = float(np.median(val))
     median_saturation = float(np.median(sat))
     if median_value < 55:
-        return "Black"
-    if median_saturation < 35:
-        brightness = median_value
-        return "White" if brightness > 185 else "Silver/Gray"
-
-    dominant_hue = float(np.median(hue))
-    if dominant_hue < 10 or dominant_hue >= 170:
-        color = "Red"
-    elif dominant_hue < 25:
-        color = "Orange/Brown"
-    elif dominant_hue < 35:
-        color = "Yellow/Gold"
-    elif dominant_hue < 85:
-        color = "Green"
-    elif dominant_hue < 135:
-        color = "Blue"
+        color = "Black"
+    elif median_saturation < 35:
+        color = "White" if median_value > 185 else "Silver/Gray"
     else:
-        color = "Purple"
+        dominant_hue = float(np.median(hue))
+        if dominant_hue < 10 or dominant_hue >= 170:
+            color = "Red"
+        elif dominant_hue < 25:
+            color = "Orange/Brown"
+        elif dominant_hue < 35:
+            color = "Yellow/Gold"
+        elif dominant_hue < 85:
+            color = "Green"
+        elif dominant_hue < 135:
+            color = "Blue"
+        else:
+            color = "Purple"
     return color
 
 
