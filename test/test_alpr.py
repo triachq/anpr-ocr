@@ -3,6 +3,7 @@ Test ALPR end-to-end.
 """
 
 from pathlib import Path
+from types import MethodType
 
 import cv2
 import numpy as np
@@ -23,7 +24,11 @@ from anpr_ocr.utils import (
     split_two_row_crop,
     vote_consensus_plate,
     get_state_name,
+    get_plate_region,
+    is_uae_region,
 )
+from anpr_ocr.default_ocr import DefaultOCR
+from anpr_ocr.video_demo import PLATE_PATTERNS
 
 ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
 
@@ -218,6 +223,88 @@ def test_indian_state_code_mapping() -> None:
     assert get_state_name("OD02AB1234") == "Odisha"
     assert get_state_name("DD01AB1234") == "Dadra and Nagar Haveli and Daman and Diu"
     assert get_state_name("XX01AB1234") == ""
+
+
+@pytest.mark.parametrize(
+    "region",
+    ["AE", "UAE", "United Arab Emirates", "emirates", " UAE "],
+)
+def test_uae_region_aliases(region: str) -> None:
+    assert is_uae_region(region) is True
+
+
+@pytest.mark.parametrize("region", [None, "India", "United Kingdom", ""])
+def test_non_uae_region_aliases(region: str | None) -> None:
+    assert is_uae_region(region) is False
+
+
+def test_uae_plate_region_and_healing_guard() -> None:
+    assert get_plate_region("D123456", "UAE") == "United Arab Emirates"
+    assert get_plate_region("MH12DE1433", "UAE") == "Maharashtra"
+    assert get_plate_region("D123456", "United Kingdom") == "United Kingdom"
+    assert get_plate_region("D123456") == "Other / International"
+    assert disambiguate_plate("D123456", ["LDDDDDD"], apply_indian_healing=False) == "D123456"
+    assert disambiguate_plate("D123456", ["LDDDDDD"]) == "DL23456"
+
+
+@pytest.mark.parametrize(
+    "plate, pattern",
+    [
+        ("D123456", "LDDDDDD"),
+        ("D12345", "LDDDDD"),
+        ("AB1234", "LLDDDD"),
+        ("123456", "DDDDDD"),
+        ("12345", "DDDDD"),
+    ],
+)
+def test_uae_syntax_patterns_preserve_plate_text(plate: str, pattern: str) -> None:
+    assert pattern in PLATE_PATTERNS
+    assert disambiguate_plate(plate, [pattern], apply_indian_healing=False) == plate
+
+
+def test_default_ocr_preserves_uae_single_row_text() -> None:
+    ocr = DefaultOCR.__new__(DefaultOCR)
+    ocr.enhance_contrast = False
+    ocr.min_plate_width = 0
+    ocr.syntax_pattern = ["LDDDDDD"]
+
+    def run_single_crop(
+        _self: DefaultOCR, _crop: np.ndarray
+    ) -> tuple[str, list[float], str | None, float | None]:
+        return "D123456", [0.95] * 7, "UAE", 0.99
+
+    ocr._run_single_crop = MethodType(run_single_crop, ocr)  # type: ignore[method-assign]
+    result = ocr.predict(np.zeros((30, 100, 3), dtype=np.uint8))
+
+    assert result is not None
+    assert result.text == "D123456"
+    assert result.region == "UAE"
+
+
+def test_default_ocr_preserves_uae_two_row_text() -> None:
+    ocr = DefaultOCR.__new__(DefaultOCR)
+    ocr.enhance_contrast = False
+    ocr.min_plate_width = 0
+    ocr.syntax_pattern = ["LDDDDD"]
+    calls = 0
+
+    def run_single_crop(
+        _self: DefaultOCR, _crop: np.ndarray
+    ) -> tuple[str, list[float], str | None, float | None]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return "D12", [0.60] * 3, "UAE", 0.99
+        if calls == 2:
+            return "D12", [0.95] * 3, "UAE", 0.99
+        return "345", [0.95] * 3, "UAE", 0.99
+
+    ocr._run_single_crop = MethodType(run_single_crop, ocr)  # type: ignore[method-assign]
+    result = ocr.predict(np.zeros((100, 60, 3), dtype=np.uint8))
+
+    assert result is not None
+    assert result.text == "D12345"
+    assert result.region == "UAE"
 
 
 def test_vehicle_color_estimation() -> None:

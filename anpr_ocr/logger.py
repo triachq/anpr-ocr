@@ -16,7 +16,7 @@ from typing import Any
 import cv2
 import numpy as np
 
-from anpr_ocr.utils import get_state_name
+from anpr_ocr.utils import get_plate_region
 
 
 def is_similar_plate(p1: str, p2: str, threshold: float = 0.75) -> bool:
@@ -140,6 +140,7 @@ class PlateLogger:
         frame_idx: int,
         frame_bgr: np.ndarray,
         fps: float = 25.0,
+        model_region: str | None = None,
     ) -> None:
         """
         Record a plate observation from a video frame. If the vehicle is already
@@ -160,7 +161,7 @@ class PlateLogger:
         x2, y2 = min(frame_bgr.shape[1], b.x2), min(frame_bgr.shape[0], b.y2)
         crop = frame_bgr[y1:y2, x1:x2].copy() if (x2 > x1 and y2 > y1) else None
 
-        state = get_state_name(clean_text) or "Other / International"
+        state = get_plate_region(clean_text, model_region)
         vehicle_color = estimate_vehicle_color(frame_bgr, b)
 
         # Check if this detection matches an active vehicle event

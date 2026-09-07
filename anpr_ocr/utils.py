@@ -222,6 +222,36 @@ def get_state_name(plate_text: str) -> str:
     return INDIAN_STATE_NAMES.get(prefix, "")
 
 
+UAE_REGION_ALIASES = frozenset(
+    {
+        "AE",
+        "UAE",
+        "UNITED ARAB EMIRATES",
+        "EMIRATES",
+    }
+)
+
+
+def is_uae_region(model_region: str | None) -> bool:
+    """Return whether OCR region metadata identifies the United Arab Emirates."""
+    normalized_region = " ".join((model_region or "").upper().split())
+    return normalized_region in UAE_REGION_ALIASES or "UNITED ARAB EMIRATES" in normalized_region
+
+
+def get_plate_region(plate_text: str, model_region: str | None = None) -> str:
+    """Resolve an Indian state or UAE country from OCR text and model metadata."""
+    state_name = get_state_name(plate_text)
+    if state_name:
+        return state_name
+
+    normalized_region = " ".join((model_region or "").upper().split())
+    if is_uae_region(model_region):
+        return "United Arab Emirates"
+    if normalized_region:
+        return model_region or "Other / International"
+    return "Other / International"
+
+
 STATE_PREFIX_CORRECTIONS: dict[str, str] = {
     "0L": "DL",
     "OL": "DL",
@@ -573,6 +603,7 @@ def disambiguate_plate(
     pattern_mask: str | Sequence[str] | None = None,
     custom_letter_to_digit: dict[str, str] | None = None,
     custom_digit_to_letter: dict[str, str] | None = None,
+    apply_indian_healing: bool = True,
 ) -> str:
     """
     Disambiguate visually similar characters (e.g. 0 vs O, 1 vs I, 8 vs B)
@@ -593,8 +624,9 @@ def disambiguate_plate(
 
     clean_text = text.replace(" ", "").upper()
 
-    # Apply Indian plate healing first if eligible
-    clean_text = heal_indian_plate(clean_text)
+    # Apply Indian plate healing only when the OCR region is not UAE.
+    if apply_indian_healing:
+        clean_text = heal_indian_plate(clean_text)
 
     if not pattern_mask:
         return clean_text
@@ -642,4 +674,4 @@ def disambiguate_plate(
             result_chars.append(char)
 
     disambiguated = "".join(result_chars)
-    return heal_indian_plate(disambiguated)
+    return heal_indian_plate(disambiguated) if apply_indian_healing else disambiguated

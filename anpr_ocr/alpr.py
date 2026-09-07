@@ -20,7 +20,12 @@ from anpr_ocr.base import BaseDetector, BaseOCR, DetectionResult, OcrResult
 from anpr_ocr.default_detector import DefaultDetector
 from anpr_ocr.default_ocr import DefaultOCR
 from anpr_ocr.logger import PlateLogger, VehicleRecord
-from anpr_ocr.utils import PlateTracker, disambiguate_plate, pad_bounding_box
+from anpr_ocr.utils import (
+    PlateTracker,
+    disambiguate_plate,
+    is_uae_region,
+    pad_bounding_box,
+)
 
 
 # pylint: disable=too-many-arguments, too-many-locals
@@ -306,7 +311,11 @@ class ALPR:
 
             # Apply syntax disambiguation and auto-healing
             if ocr_result and ocr_result.text:
-                disambiguated_text = disambiguate_plate(ocr_result.text, self.syntax_pattern)
+                disambiguated_text = disambiguate_plate(
+                    ocr_result.text,
+                    self.syntax_pattern,
+                    apply_indian_healing=not is_uae_region(ocr_result.region),
+                )
                 if disambiguated_text != ocr_result.text:
                     ocr_result = OcrResult(
                         text=disambiguated_text,
@@ -584,6 +593,7 @@ class ALPR:
                     smoothed_results: list[ALPRResult] = []
 
                     for box, display_text, display_conf, _ in tracked:
+                        orig_res = det_map.get(id(box))
                         if logger is not None:
                             logger.observe(
                                 plate_text=display_text,
@@ -592,8 +602,10 @@ class ALPR:
                                 frame_idx=frame_idx,
                                 frame_bgr=frame,
                                 fps=fps,
+                                model_region=(
+                                    orig_res.ocr.region if orig_res and orig_res.ocr else None
+                                ),
                             )
-                        orig_res = det_map.get(id(box))
                         reg = orig_res.ocr.region if orig_res and orig_res.ocr else None
                         reg_c = (
                             orig_res.ocr.region_confidence if orig_res and orig_res.ocr else None
