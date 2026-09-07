@@ -35,9 +35,9 @@ classifiers = [
     "Programming Language :: Python :: 3.13"
 ]
 dependencies = [
-    "fast-plate-ocr>=1.1.0",
+    "fast-plate-ocr[onnx]>=1.1.0",
     "open-image-models>=0.5.1",
-    "opencv-python-headless>=4.9.0.80",
+    "opencv-python>=4.9.0.80",
 ]
 
 [project.scripts]
@@ -73,6 +73,7 @@ default-groups = [
     "dev",
     "docs",
 ]
+exclude-dependencies = ["opencv-python-headless"]
 
 [build-system]
 requires = ["hatchling"]
