@@ -92,6 +92,7 @@ class VehicleRecord:
     video_time: str
     frame_index: int
     detected_at: str
+    vehicle_color: str = "Unknown"
     frames_observed: int = 1
     snapshot_path: str | None = None
     crop_image: np.ndarray | None = None
@@ -160,6 +161,7 @@ class PlateLogger:
         crop = frame_bgr[y1:y2, x1:x2].copy() if (x2 > x1 and y2 > y1) else None
 
         state = get_state_name(clean_text) or "Other / International"
+        vehicle_color = estimate_vehicle_color(frame_bgr, b)
 
         # Check if this detection matches an active vehicle event
         matched: VehicleRecord | None = None
@@ -173,6 +175,8 @@ class PlateLogger:
         if matched is not None:
             matched.last_frame = frame_idx
             matched.frames_observed += 1
+            if matched.vehicle_color == "Unknown" and vehicle_color != "Unknown":
+                matched.vehicle_color = vehicle_color
 
             # PEAK ACCURACY CRITERION:
             # Update candidate if new frame has longer plate length (e.g. 10 chars vs 8)
@@ -197,6 +201,7 @@ class PlateLogger:
                 video_time=time_str,
                 frame_index=frame_idx,
                 detected_at=now_str,
+                vehicle_color=vehicle_color,
                 frames_observed=1,
                 crop_image=crop,
                 first_frame=frame_idx,
@@ -262,6 +267,7 @@ class PlateLogger:
                     "Plate Number",
                     "Peak Confidence",
                     "State / Region",
+                    "Vehicle Color",
                     "Video Timestamp",
                     "Peak Frame",
                     "Detected At (Real Time)",
@@ -276,6 +282,7 @@ class PlateLogger:
                         ev.plate_number,
                         f"{ev.confidence * 100:.1f}%",
                         ev.state_region,
+                        ev.vehicle_color,
                         ev.video_time,
                         ev.frame_index,
                         ev.detected_at,
@@ -314,6 +321,7 @@ class PlateLogger:
                 "plate_number": ev.plate_number,
                 "confidence": round(ev.confidence, 4),
                 "state_region": ev.state_region,
+                "vehicle_color": ev.vehicle_color,
                 "video_timestamp": ev.video_time,
                 "peak_frame": ev.frame_index,
                 "detected_at": ev.detected_at,
@@ -340,13 +348,13 @@ class PlateLogger:
             "=" * 92,
             f"  FINAL VEHICLE LOG -- {len(finalized)} Unique Vehicle(s) Detected at Peak Accuracy",
             "=" * 92,
-            f"{'#':<3} | {'Plate Number':<14} | {'Peak Conf':<10} | {'State / Region':<22} | {'Video Time':<10} | {'Frames':<6}",  # noqa: E501
+            f"{'#':<3} | {'Plate Number':<14} | {'Peak Conf':<10} | {'State / Region':<22} | {'Car Color':<15} | {'Video Time':<10} | {'Frames':<6}",  # noqa: E501
             "-" * 92,
         ]
         for idx, ev in enumerate(finalized, 1):
             conf_str = f"{ev.confidence * 100:.1f}%"
             lines.append(
-                f"{idx:<3} | {ev.plate_number:<14} | {conf_str:<10} | {ev.state_region:<22} | {ev.video_time:<10} | {ev.frames_observed:<6}"  # noqa: E501
+                f"{idx:<3} | {ev.plate_number:<14} | {conf_str:<10} | {ev.state_region:<22} | {ev.vehicle_color:<15} | {ev.video_time:<10} | {ev.frames_observed:<6}"  # noqa: E501
             )
         lines.append("=" * 92)
         return "\n".join(lines)

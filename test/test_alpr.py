@@ -248,7 +248,10 @@ def test_plate_logger_and_exports(tmp_path: Path) -> None:
         min_chars=4,
     )
     frame = np.zeros((200, 200, 3), dtype=np.uint8)
+    frame[0:140, 0:160] = (255, 0, 0)
     box = DummyBox(20, 20, 120, 60)
+
+    assert estimate_vehicle_color(frame, box) == "Blue"
 
     logger.observe("MH12DE1433", 0.80, box, frame_idx=0, frame_bgr=frame, fps=30.0)
     logger.observe("MH12DE1433", 0.95, box, frame_idx=1, frame_bgr=frame, fps=30.0)
@@ -257,10 +260,12 @@ def test_plate_logger_and_exports(tmp_path: Path) -> None:
     assert len(finalized) == 1
     assert finalized[0].plate_number == "MH12DE1433"
     assert finalized[0].confidence == 0.95
+    assert finalized[0].vehicle_color == "Blue"
 
     # Export CSV & JSON
     out_csv = logger.export_csv()
     assert out_csv is not None and out_csv.is_file()
+    assert "Vehicle Color" in out_csv.read_text(encoding="utf-8")
 
     out_json = logger.export_json(json_file)
     assert out_json is not None and out_json.is_file()
